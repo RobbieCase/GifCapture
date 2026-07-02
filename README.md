@@ -15,18 +15,26 @@ output is a shareable GIF instead of a .mov.
 ## Requirements
 
 - macOS 13+
-- [gifski](https://gif.ski): `brew install gifski`
+- [gifski](https://gif.ski) is bundled inside the app. The optional ffmpeg
+  encoder (selectable in Settings) uses a Homebrew ffmpeg if present:
+  `brew install ffmpeg`
 
-## Install from a release (another Mac)
+## Install (any Mac) — one command
 
-1. Download `GifCapture.zip` from the [latest release](https://github.com/RobbieCase/GifCapture/releases/latest) and unzip it.
-2. Move `GifCapture.app` to `/Applications`.
-3. First launch: the app is ad-hoc signed (not notarized), so macOS will block a
-   normal double-click. **Right-click the app → Open → Open** to bypass Gatekeeper
-   once; after that it opens normally. If macOS says the app is "damaged", run:
-   `xattr -d com.apple.quarantine /Applications/GifCapture.app`
-4. Install the GIF encoder: `brew install gifski` (and optionally `ffmpeg`).
-5. Grant Screen Recording permission when prompted on first recording.
+Paste this in Terminal:
+
+```
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/RobbieCase/GifCapture/main/install.sh)"
+```
+
+It downloads the latest release, installs to `/Applications`, clears the
+Gatekeeper quarantine (the build is ad-hoc signed, not notarized), and launches
+the app. gifski is bundled inside the app, so there's nothing else to install —
+just grant Screen Recording permission when prompted on the first recording.
+
+Manual alternative: grab `GifCapture.zip` from the
+[latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
+unzip, move to `/Applications`, then right-click → Open on first launch.
 
 ## Build
 

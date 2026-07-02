@@ -1,0 +1,27 @@
+#!/bin/bash
+# GifCapture one-line installer:
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/RobbieCase/GifCapture/main/install.sh)"
+set -euo pipefail
+
+ZIP_URL="https://github.com/RobbieCase/GifCapture/releases/latest/download/GifCapture.zip"
+DEST="/Applications/GifCapture.app"
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+echo "Downloading GifCapture…"
+curl -fsSL -o "$TMP/GifCapture.zip" "$ZIP_URL"
+ditto -x -k "$TMP/GifCapture.zip" "$TMP"
+
+echo "Installing to $DEST…"
+pkill -f "$DEST/Contents/MacOS/GifCapture" 2>/dev/null || true
+rm -rf "$DEST"
+ditto "$TMP/GifCapture.app" "$DEST"
+
+# The build is ad-hoc signed (not notarized); clear quarantine so Gatekeeper
+# doesn't block it.
+xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+
+open -a "$DEST"
+echo "Done — GifCapture is running. Look for the GC icon in your menu bar."
+echo "macOS will ask for Screen Recording permission on your first recording."

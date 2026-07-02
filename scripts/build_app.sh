@@ -30,6 +30,13 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 if [ -f "Resources/AppIcon.icns" ]; then
   cp "Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
+# Bundle the official (universal, self-contained) gifski binary so installs
+# on other Macs don't need Homebrew.
+if [ -f "Resources/bin/gifski" ]; then
+  mkdir -p "$APP_DIR/Contents/Resources/bin"
+  cp "Resources/bin/gifski" "$APP_DIR/Contents/Resources/bin/gifski"
+  chmod +x "$APP_DIR/Contents/Resources/bin/gifski"
+fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

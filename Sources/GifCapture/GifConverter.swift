@@ -92,6 +92,12 @@ enum GifConverter {
     }
 
     private static func locate(_ tool: String) -> String? {
+        // Prefer the copy bundled inside the app (no Homebrew needed).
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/\(tool)").path,
+            FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         let candidates = ["/opt/homebrew/bin/\(tool)", "/usr/local/bin/\(tool)"]
         for path in candidates where FileManager.default.fileExists(atPath: path) {
             return path
