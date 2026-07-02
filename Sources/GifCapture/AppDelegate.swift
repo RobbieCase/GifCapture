@@ -1,0 +1,124 @@
+import AppKit
+import CoreGraphics
+import ScreenCaptureKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem!
+    private var selectionController: SelectionOverlayController?
+    private var recorder: ScreenRecorder?
+    private var recordingOverlay: RecordingOverlayController?
+    private var settingsController: SettingsWindowController?
+    private var lastSelectionPointWidth = 0
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = CGRequestScreenCaptureAccess()
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "GifCapture")
+        }
+        rebuildMenu()
+    }
+
+    private func rebuildMenu() {
+        let menu = NSMenu()
+        if recorder?.isRecording == true {
+            menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "")
+        } else {
+            menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: "Open Output Folder", action: #selector(openOutputFolder), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit GifCapture", action: #selector(quit), keyEquivalent: "q")
+        for item in menu.items { item.target = self }
+        statusItem.menu = menu
+    }
+
+    @objc private func startSelection() {
+        selectionController = SelectionOverlayController { [weak self] result in
+            self?.selectionController = nil
+            guard let self, let result else { return }
+            self.beginRecording(result: result)
+        }
+        selectionController?.begin()
+    }
+
+    private func beginRecording(result: SelectionResult) {
+        let recorder = ScreenRecorder()
+        self.recorder = recorder
+        lastSelectionPointWidth = Int(result.rect.width)
+
+        let overlay = RecordingOverlayController(screen: result.screen, topLeftRect: result.rect) { [weak self] in
+            self?.stopRecording()
+        }
+        overlay.show()
+        recordingOverlay = overlay
+        rebuildMenu()
+
+        Task {
+            do {
+                try await recorder.start(
+                    rect: result.rect,
+                    display: result.display,
+                    excludingWindowIDs: overlay.captureExcludedWindowIDs
+                )
+            } catch {
+                await MainActor.run {
+                    self.showError("Couldn't start recording", error)
+                    self.recordingOverlay?.close()
+                    self.recordingOverlay = nil
+                    self.recorder = nil
+                    self.rebuildMenu()
+                }
+            }
+        }
+    }
+
+    @objc private func stopRecording() {
+        guard let recorder else { return }
+        recordingOverlay?.close()
+        recordingOverlay = nil
+        rebuildMenu()
+
+        Task {
+            do {
+                let videoURL = try await recorder.stop()
+                self.recorder = nil
+                let gifURL = try GifConverter.convert(videoURL: videoURL, pointWidth: self.lastSelectionPointWidth)
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting([gifURL])
+                }
+            } catch {
+                self.recorder = nil
+                await MainActor.run {
+                    self.showError("Couldn't finish recording", error)
+                }
+            }
+        }
+    }
+
+    @objc private func openSettings() {
+        if settingsController == nil {
+            settingsController = SettingsWindowController()
+        }
+        settingsController?.show()
+    }
+
+    @objc private func openOutputFolder() {
+        NSWorkspace.shared.open(GifConverter.outputDirectory)
+    }
+
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+
+    private func showError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+}
