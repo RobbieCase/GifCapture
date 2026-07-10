@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.4.1"
+VERSION="0.4.2"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
@@ -22,7 +22,7 @@ echo "Compiling..."
 swiftc -O \
   Sources/GifCapture/*.swift \
   -o "$BUILD_DIR/$APP_NAME" \
-  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics
+  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz
 
 echo "Assembling app bundle..."
 rm -rf "$APP_DIR"

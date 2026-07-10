@@ -11,6 +11,7 @@ enum TrimResult {
 final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private let videoURL: URL
     private let pointWidth: Int
+    private let outputGifURL: URL?
     private let completion: (TrimResult) -> Void
 
     private let asset: AVAsset
@@ -26,9 +27,10 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private var saveButton: NSButton!
     private var cancelButton: NSButton!
 
-    init(videoURL: URL, pointWidth: Int, completion: @escaping (TrimResult) -> Void) {
+    init(videoURL: URL, pointWidth: Int, outputGifURL: URL? = nil, completion: @escaping (TrimResult) -> Void) {
         self.videoURL = videoURL
         self.pointWidth = pointWidth
+        self.outputGifURL = outputGifURL
         self.completion = completion
         self.asset = AVURLAsset(url: videoURL)
         self.player = AVPlayer(url: videoURL)
@@ -174,8 +176,9 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
                     start: start, end: end, fullDuration: duration
                 )
                 let width = pointWidth
+                let destination = outputGifURL
                 let gifURL = try await Task.detached {
-                    try GifConverter.convert(videoURL: trimmedURL, pointWidth: width)
+                    try GifConverter.convert(videoURL: trimmedURL, pointWidth: width, outputURL: destination)
                 }.value
                 await MainActor.run { self.finish(.saved(gifURL)) }
             } catch {

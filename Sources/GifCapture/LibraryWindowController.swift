@@ -1,17 +1,27 @@
 import AppKit
+import Quartz
 import UniformTypeIdentifiers
 
 /// Finder-like browser for ~/Desktop/GifCaptures: thumbnail grid of GIFs and
 /// folders, folder navigation, New Folder, drag GIFs onto folders to move them,
-/// and drag out to other apps.
+/// drag out to other apps, Quick Look on Space, and a context menu with
+/// Preview / Trim / Copy.
 final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     private var currentFolder: URL = GifConverter.outputDirectory
     private var items: [URL] = []
+    private var previewItems: [URL] = []
+    private var trimController: TrimWindowController?
 
-    private var collectionView: NSCollectionView!
+    private var collectionView: KeyHandlingCollectionView!
     private var backButton: NSButton!
     private var pathLabel: NSTextField!
     private var folderWatcher: DispatchSourceFileSystemObject?
+
+    private var previewMenuItem: NSMenuItem!
+    private var trimMenuItem: NSMenuItem!
+    private var copyMenuItem: NSMenuItem!
+    private var revealMenuItem: NSMenuItem!
+    private var trashMenuItem: NSMenuItem!
 
     convenience init() {
         let window = NSWindow(
@@ -37,6 +47,39 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopWatching()
+    }
+
+    // MARK: - Quick Look plumbing
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+        panel.delegate = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
+
+    fileprivate func togglePreview() {
+        let gifs = selectedURLs().filter { !isFolder($0) }
+        guard let panel = QLPreviewPanel.shared() else { return }
+        if QLPreviewPanel.sharedPreviewPanelExists(), panel.isVisible {
+            panel.orderOut(nil)
+            return
+        }
+        guard !gifs.isEmpty else { return }
+        previewItems = gifs
+        panel.makeKeyAndOrderFront(nil)
+        panel.reloadData()
+    }
+
+    private func refreshPreviewIfVisible() {
+        guard QLPreviewPanel.sharedPreviewPanelExists(),
+              let panel = QLPreviewPanel.shared(), panel.isVisible else { return }
+        let gifs = selectedURLs().filter { !isFolder($0) }
+        guard !gifs.isEmpty else { return }
+        previewItems = gifs
+        panel.reloadData()
     }
 
     // MARK: - UI
@@ -71,7 +114,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         layout.minimumLineSpacing = 14
         layout.sectionInset = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
 
-        collectionView = NSCollectionView()
+        collectionView = KeyHandlingCollectionView()
         collectionView.collectionViewLayout = layout
         collectionView.dataSource = self
         collectionView.delegate = self
@@ -82,6 +125,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         collectionView.setDraggingSourceOperationMask(.copy, forLocal: false)
         collectionView.setDraggingSourceOperationMask(.move, forLocal: true)
         collectionView.registerForDraggedTypes([.fileURL])
+        collectionView.onSpaceKey = { [weak self] in self?.togglePreview() }
 
         let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
         doubleClick.numberOfClicksRequired = 2
@@ -108,11 +152,16 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         window?.contentView = content
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "Open", action: #selector(contextOpen), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Show in Finder", action: #selector(contextReveal), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Copy", action: #selector(contextCopy), keyEquivalent: "").target = self
+        menu.autoenablesItems = false
+        menu.delegate = self
+        previewMenuItem = menu.addItem(withTitle: "Preview", action: #selector(contextPreview), keyEquivalent: "")
+        trimMenuItem = menu.addItem(withTitle: "Trim…", action: #selector(contextTrim), keyEquivalent: "")
+        copyMenuItem = menu.addItem(withTitle: "Copy to Clipboard", action: #selector(contextCopy), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Move to Trash", action: #selector(contextTrash), keyEquivalent: "").target = self
+        revealMenuItem = menu.addItem(withTitle: "Show in Finder", action: #selector(contextReveal), keyEquivalent: "")
+        menu.addItem(.separator())
+        trashMenuItem = menu.addItem(withTitle: "Move to Trash", action: #selector(contextTrash), keyEquivalent: "")
+        for item in menu.items { item.target = self }
         collectionView.menu = menu
     }
 
@@ -178,7 +227,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         collectionView.selectionIndexPaths.compactMap { items.indices.contains($0.item) ? items[$0.item] : nil }
     }
 
-    // MARK: - Actions
+    // MARK: - Toolbar actions
 
     @objc private func goBack() {
         navigate(to: currentFolder.deletingLastPathComponent())
@@ -224,14 +273,46 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func contextOpen() {
-        selectedURLs().forEach { url in
-            if isFolder(url) { navigate(to: url) } else { NSWorkspace.shared.open(url) }
-        }
+    // MARK: - Context menu actions
+
+    @objc private func contextPreview() {
+        togglePreview()
     }
 
-    @objc private func contextReveal() {
-        NSWorkspace.shared.activateFileViewerSelecting(selectedURLs())
+    @objc private func contextTrim() {
+        let gifs = selectedURLs().filter { !isFolder($0) }
+        guard let gif = gifs.first else { return }
+
+        Task {
+            do {
+                let (movURL, width) = try await Task.detached {
+                    try GifImporter.makeVideo(from: gif)
+                }.value
+                await MainActor.run {
+                    let folder = gif.deletingLastPathComponent()
+                    let base = gif.deletingPathExtension().lastPathComponent
+                    var target = folder.appendingPathComponent("\(base) trimmed.gif")
+                    var counter = 2
+                    while FileManager.default.fileExists(atPath: target.path) {
+                        target = folder.appendingPathComponent("\(base) trimmed \(counter).gif")
+                        counter += 1
+                    }
+                    let controller = TrimWindowController(
+                        videoURL: movURL, pointWidth: width, outputGifURL: target
+                    ) { [weak self] result in
+                        self?.trimController = nil
+                        if case .failed(let error) = result {
+                            self?.showError("Couldn't trim GIF", error)
+                        }
+                        self?.reload()
+                    }
+                    self.trimController = controller
+                    controller.show()
+                }
+            } catch {
+                await MainActor.run { self.showError("Couldn't trim GIF", error) }
+            }
+        }
     }
 
     @objc private func contextCopy() {
@@ -241,11 +322,57 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.writeObjects(urls as [NSURL])
     }
 
+    @objc private func contextReveal() {
+        NSWorkspace.shared.activateFileViewerSelecting(selectedURLs())
+    }
+
     @objc private func contextTrash() {
         for url in selectedURLs() {
             try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
         reload()
+    }
+
+    private func showError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+}
+
+// MARK: - Menu delegate (right-click selects the item under the cursor)
+
+extension LibraryWindowController: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        if let event = NSApp.currentEvent {
+            let point = collectionView.convert(event.locationInWindow, from: nil)
+            if let indexPath = collectionView.indexPathForItem(at: point),
+               !collectionView.selectionIndexPaths.contains(indexPath) {
+                collectionView.deselectItems(at: collectionView.selectionIndexPaths)
+                collectionView.selectItems(at: [indexPath], scrollPosition: [])
+            }
+        }
+        let urls = selectedURLs()
+        let gifs = urls.filter { !isFolder($0) }
+        previewMenuItem.isEnabled = !gifs.isEmpty
+        trimMenuItem.isEnabled = gifs.count == 1 && urls.count == 1
+        copyMenuItem.isEnabled = !urls.isEmpty
+        revealMenuItem.isEnabled = !urls.isEmpty
+        trashMenuItem.isEnabled = !urls.isEmpty
+    }
+}
+
+// MARK: - Quick Look data source / delegate
+
+extension LibraryWindowController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewItems.count
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        previewItems.indices.contains(index) ? previewItems[index] as NSURL : nil
     }
 }
 
@@ -261,6 +388,14 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
         guard let libraryCell = cell as? LibraryCell, items.indices.contains(indexPath.item) else { return cell }
         libraryCell.configure(with: items[indexPath.item], isFolder: isFolder(items[indexPath.item]))
         return cell
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        refreshPreviewIfVisible()
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, didDeselectItemsAt indexPaths: Set<IndexPath>) {
+        refreshPreviewIfVisible()
     }
 
     func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
@@ -305,6 +440,20 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
         }
         reload()
         return moved
+    }
+}
+
+// MARK: - Space-key handling
+
+final class KeyHandlingCollectionView: NSCollectionView {
+    var onSpaceKey: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " {
+            onSpaceKey?()
+        } else {
+            super.keyDown(with: event)
+        }
     }
 }
 

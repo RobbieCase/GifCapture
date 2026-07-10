@@ -268,6 +268,8 @@ final class RecordingOverlayController: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Controls sit on a dark backdrop; without this they render dark-on-dark.
+        panel.appearance = NSAppearance(named: .darkAqua)
         let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor

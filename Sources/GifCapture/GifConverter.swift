@@ -27,14 +27,14 @@ enum GifConverter {
     ///   output-scale setting to size the GIF (and stop gifski's default ~800px cap
     ///   from blurring larger captures).
     @discardableResult
-    static func convert(videoURL: URL, pointWidth: Int) throws -> URL {
+    static func convert(videoURL: URL, pointWidth: Int, outputURL explicitOutput: URL? = nil) throws -> URL {
         let settings = AppSettings.load()
         let width = max(2, pointWidth * settings.scale.rawValue)
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let name = "GifCapture \(formatter.string(from: Date())).gif"
-        let outputURL = outputDirectory.appendingPathComponent(name)
+        let outputURL = explicitOutput ?? outputDirectory.appendingPathComponent(name)
 
         defer { try? FileManager.default.removeItem(at: videoURL) }
 
