@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.3.1"
+VERSION="0.3.2"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
@@ -80,6 +80,20 @@ else
   echo "Ad-hoc signing..."
 fi
 codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR"
+
+# Distribution copy: ALWAYS ad-hoc signed. Other Macs don't trust the local
+# certificate, and macOS won't persist TCC grants for an app whose signature
+# chains to an untrusted cert — it would re-prompt for Screen Recording forever.
+DIST_DIR=".build/dist"
+rm -rf "$DIST_DIR"
+mkdir -p "$DIST_DIR"
+# ditto without extended attributes: codesign rejects copied Finder metadata
+ditto --noextattr --noacl --norsrc "$APP_DIR" "$DIST_DIR/$APP_NAME.app"
+codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_DIR/$APP_NAME.app"
+# Zip without extended attributes — macOS re-tags signed files with provenance
+# xattrs that read as "detritus" and break signature verification on other Macs.
+ditto --noextattr --noacl --norsrc -c -k --keepParent "$DIST_DIR/$APP_NAME.app" "$DIST_DIR/$APP_NAME.zip"
+echo "Distribution zip (ad-hoc signed, for releases): $DIST_DIR/$APP_NAME.zip"
 
 echo "Built $APP_DIR"
 

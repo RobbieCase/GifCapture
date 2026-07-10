@@ -22,6 +22,13 @@ ditto "${TMP}/GifCapture.app" "${DEST}"
 # doesn't block it.
 xattr -dr com.apple.quarantine "${DEST}" 2>/dev/null || true
 
+# Each release has a new ad-hoc signature; clear any stale Screen Recording
+# entry from a previous version so the fresh grant attaches cleanly.
+tccutil reset ScreenCapture com.robbiecase.gifcapture >/dev/null 2>&1 || true
+
 open -a "${DEST}"
 echo "Done - GifCapture is running. Look for the GC icon in your menu bar."
-echo "macOS will ask for Screen Recording permission on your first recording."
+echo ""
+echo "IMPORTANT: when macOS asks for Screen Recording permission, grant it,"
+echo "then QUIT and REOPEN GifCapture once (menu bar icon -> Quit GifCapture)."
+echo "The permission only takes effect for a freshly launched app."
