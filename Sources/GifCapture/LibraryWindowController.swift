@@ -223,8 +223,29 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
+    // MARK: - Parent ("⬆ Back") pseudo-item
+
+    /// Inside a subfolder, item 0 is a "Back" tile: double-click navigates up,
+    /// and dropping GIFs on it moves them to the enclosing folder.
+    private var showParentItem: Bool {
+        currentFolder.standardizedFileURL != GifConverter.outputDirectory.standardizedFileURL
+    }
+
+    private var parentOffset: Int { showParentItem ? 1 : 0 }
+
+    private func isParentItem(_ indexPath: IndexPath) -> Bool {
+        showParentItem && indexPath.item == 0
+    }
+
+    private func url(at indexPath: IndexPath) -> URL? {
+        let index = indexPath.item - parentOffset
+        return items.indices.contains(index) ? items[index] : nil
+    }
+
     private func selectedURLs() -> [URL] {
-        collectionView.selectionIndexPaths.compactMap { items.indices.contains($0.item) ? items[$0.item] : nil }
+        collectionView.selectionIndexPaths
+            .filter { !isParentItem($0) }
+            .compactMap { url(at: $0) }
     }
 
     // MARK: - Toolbar actions
@@ -263,9 +284,12 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func handleDoubleClick(_ gesture: NSClickGestureRecognizer) {
         let point = gesture.location(in: collectionView)
-        guard let indexPath = collectionView.indexPathForItem(at: point),
-              items.indices.contains(indexPath.item) else { return }
-        let url = items[indexPath.item]
+        guard let indexPath = collectionView.indexPathForItem(at: point) else { return }
+        if isParentItem(indexPath) {
+            goBack()
+            return
+        }
+        guard let url = url(at: indexPath) else { return }
         if isFolder(url) {
             navigate(to: url)
         } else {
@@ -349,6 +373,7 @@ extension LibraryWindowController: NSMenuDelegate {
         if let event = NSApp.currentEvent {
             let point = collectionView.convert(event.locationInWindow, from: nil)
             if let indexPath = collectionView.indexPathForItem(at: point),
+               !isParentItem(indexPath),
                !collectionView.selectionIndexPaths.contains(indexPath) {
                 collectionView.deselectItems(at: collectionView.selectionIndexPaths)
                 collectionView.selectItems(at: [indexPath], scrollPosition: [])
@@ -380,13 +405,17 @@ extension LibraryWindowController: QLPreviewPanelDataSource, QLPreviewPanelDeleg
 
 extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewDelegate {
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
-        items.count
+        items.count + parentOffset
     }
 
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let cell = collectionView.makeItem(withIdentifier: LibraryCell.identifier, for: indexPath)
-        guard let libraryCell = cell as? LibraryCell, items.indices.contains(indexPath.item) else { return cell }
-        libraryCell.configure(with: items[indexPath.item], isFolder: isFolder(items[indexPath.item]))
+        guard let libraryCell = cell as? LibraryCell else { return cell }
+        if isParentItem(indexPath) {
+            libraryCell.configureAsParent()
+        } else if let url = url(at: indexPath) {
+            libraryCell.configure(with: url, isFolder: isFolder(url))
+        }
         return cell
     }
 
@@ -399,8 +428,32 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
     }
 
     func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
-        guard items.indices.contains(indexPath.item) else { return nil }
-        return items[indexPath.item] as NSURL
+        guard !isParentItem(indexPath) else { return nil } // the Back tile isn't draggable
+        return url(at: indexPath) as NSURL?
+    }
+
+    private func draggedFileURLs(_ draggingInfo: NSDraggingInfo) -> [URL] {
+        draggingInfo.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+    }
+
+    /// Destination folder for a proposed drop, or nil if the drop is invalid:
+    /// onto a folder tile or the Back tile moves there; a drop on the grid
+    /// background moves into the current folder (for drags from Finder or
+    /// from another folder).
+    private func dropDestination(indexPath: IndexPath, dropOperation: NSCollectionView.DropOperation) -> URL? {
+        if dropOperation == .on {
+            if isParentItem(indexPath) {
+                return currentFolder.deletingLastPathComponent()
+            }
+            if let target = url(at: indexPath), isFolder(target) {
+                return target
+            }
+            return nil
+        }
+        return currentFolder
     }
 
     func collectionView(
@@ -409,11 +462,16 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
         proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
         dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
     ) -> NSDragOperation {
-        let index = proposedIndexPath.pointee.item
-        guard dropOperation.pointee == .on, items.indices.contains(index), isFolder(items[index]) else {
-            return []
+        guard let destination = dropDestination(
+            indexPath: proposedIndexPath.pointee as IndexPath,
+            dropOperation: dropOperation.pointee
+        ) else { return [] }
+        // Only allow when at least one dragged file would actually move.
+        let movable = draggedFileURLs(draggingInfo).contains {
+            $0.deletingLastPathComponent().standardizedFileURL != destination.standardizedFileURL
+                && $0.standardizedFileURL != destination.standardizedFileURL
         }
-        return .move
+        return movable ? .move : []
     }
 
     func collectionView(
@@ -422,17 +480,13 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
         indexPath: IndexPath,
         dropOperation: NSCollectionView.DropOperation
     ) -> Bool {
-        guard items.indices.contains(indexPath.item) else { return false }
-        let destination = items[indexPath.item]
-        guard isFolder(destination) else { return false }
-
-        let urls = draggingInfo.draggingPasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL] ?? []
-
+        guard let destination = dropDestination(indexPath: indexPath, dropOperation: dropOperation) else {
+            return false
+        }
         var moved = false
-        for url in urls where url.standardizedFileURL != destination.standardizedFileURL {
+        for url in draggedFileURLs(draggingInfo)
+        where url.standardizedFileURL != destination.standardizedFileURL
+            && url.deletingLastPathComponent().standardizedFileURL != destination.standardizedFileURL {
             let target = destination.appendingPathComponent(url.lastPathComponent)
             if (try? FileManager.default.moveItem(at: url, to: target)) != nil {
                 moved = true
@@ -470,7 +524,7 @@ final class LibraryCell: NSCollectionViewItem {
         root.wantsLayer = true
         root.layer?.cornerRadius = 8
 
-        thumbView.imageScaling = .scaleProportionallyDown
+        thumbView.imageScaling = .scaleProportionallyUpOrDown
         thumbView.translatesAutoresizingMaskIntoConstraints = false
         thumbView.unregisterDraggedTypes() // let the collection view own drag & drop
 
@@ -493,10 +547,21 @@ final class LibraryCell: NSCollectionViewItem {
         view = root
     }
 
+    func configureAsParent() {
+        nameLabel.stringValue = "⬆ Back"
+        let icon = NSWorkspace.shared.icon(for: .folder)
+        icon.size = NSSize(width: 84, height: 78)
+        thumbView.image = icon
+        thumbView.alphaValue = 0.55
+    }
+
     func configure(with url: URL, isFolder: Bool) {
+        thumbView.alphaValue = 1
         nameLabel.stringValue = url.lastPathComponent
         if isFolder {
-            thumbView.image = NSWorkspace.shared.icon(for: .folder)
+            let icon = NSWorkspace.shared.icon(for: .folder)
+            icon.size = NSSize(width: 84, height: 78)
+            thumbView.image = icon
         } else {
             thumbView.image = NSWorkspace.shared.icon(forFile: url.path)
             let itemURL = url

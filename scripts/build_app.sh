@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.4.2"
+VERSION="0.4.3"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
