@@ -21,7 +21,7 @@ echo "Compiling..."
 swiftc -O \
   Sources/GifCapture/*.swift \
   -o "$BUILD_DIR/$APP_NAME" \
-  -framework AppKit -framework AVFoundation -framework ScreenCaptureKit -framework CoreGraphics
+  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics
 
 echo "Assembling app bundle..."
 rm -rf "$APP_DIR"
@@ -69,8 +69,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "Ad-hoc signing..."
-codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_DIR"
+# Prefer the stable local identity so TCC (Screen Recording) grants survive
+# rebuilds; fall back to ad-hoc when it isn't in the keychain (e.g. other Macs).
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "GifCapture Local Dev"; then
+  SIGN_ID="GifCapture Local Dev"
+  echo "Signing with stable local identity..."
+else
+  SIGN_ID="-"
+  echo "Ad-hoc signing..."
+fi
+codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR"
 
 echo "Built $APP_DIR"
 

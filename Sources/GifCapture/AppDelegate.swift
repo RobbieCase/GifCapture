@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recorder: ScreenRecorder?
     private var recordingOverlay: RecordingOverlayController?
     private var settingsController: SettingsWindowController?
+    private var trimController: TrimWindowController?
     private var lastSelectionPointWidth = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -86,17 +87,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let videoURL = try await recorder.stop()
                 self.recorder = nil
-                let gifURL = try GifConverter.convert(videoURL: videoURL, pointWidth: self.lastSelectionPointWidth)
                 await MainActor.run {
-                    NSWorkspace.shared.activateFileViewerSelecting([gifURL])
+                    self.rebuildMenu()
+                    self.presentTrimWindow(videoURL: videoURL)
                 }
             } catch {
                 self.recorder = nil
                 await MainActor.run {
+                    self.rebuildMenu()
                     self.showError("Couldn't finish recording", error)
                 }
             }
         }
+    }
+
+    private func presentTrimWindow(videoURL: URL) {
+        let controller = TrimWindowController(
+            videoURL: videoURL,
+            pointWidth: lastSelectionPointWidth
+        ) { [weak self] result in
+            self?.trimController = nil
+            switch result {
+            case .saved(let gifURL):
+                NSWorkspace.shared.activateFileViewerSelecting([gifURL])
+            case .cancelled:
+                break
+            case .failed(let error):
+                self?.showError("Couldn't create GIF", error)
+            }
+        }
+        trimController = controller
+        controller.show()
     }
 
     @objc private func openSettings() {
