@@ -340,8 +340,8 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
             guard let self, !self.isFolder(url) else { return }
             NSWorkspace.shared.open(url)
         }
-        column.onMove = { [weak self] urls, destination in
-            self?.moveURLs(urls, into: destination)
+        column.onTransfer = { [weak self] urls, destination, isInternal in
+            self?.transferURLs(urls, into: destination, isInternal: isInternal) ?? false
         }
         column.onSpace = { [weak self] in self?.togglePreview() }
 
@@ -350,14 +350,69 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         column.tableView.menu = menu
     }
 
-    private func moveURLs(_ urls: [URL], into destination: URL) {
-        for url in urls
-        where url.standardizedFileURL != destination.standardizedFileURL
-            && url.deletingLastPathComponent().standardizedFileURL != destination.standardizedFileURL {
-            let target = destination.appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.moveItem(at: url, to: target)
+    /// Internal drags reorganize the Library. External Finder drops import GIFs
+    /// by copying them, so the original file is never removed.
+    @discardableResult
+    private func transferURLs(_ urls: [URL], into destination: URL, isInternal: Bool) -> Bool {
+        let fm = FileManager.default
+        let destination = destination.standardizedFileURL
+        let candidates = urls.filter {
+            $0.standardizedFileURL != destination
+                && (!isInternal || $0.deletingLastPathComponent().standardizedFileURL != destination)
         }
-        reloadAll()
+        guard !candidates.isEmpty else { return false }
+
+        if !isInternal,
+           let unsupported = candidates.first(where: { isFolder($0) || $0.pathExtension.lowercased() != "gif" }) {
+            showLibraryMessage(
+                "Only GIFs can be imported",
+                "\(unsupported.lastPathComponent) wasn't copied. Drag a GIF into the Library."
+            )
+            return false
+        }
+
+        for url in candidates {
+            if isFolder(url), destination.path.hasPrefix(url.standardizedFileURL.path + "/") {
+                showLibraryMessage(
+                    "That folder can't be moved there",
+                    "A folder can't be moved inside itself."
+                )
+                return false
+            }
+            let target = destination.appendingPathComponent(url.lastPathComponent)
+            if fm.fileExists(atPath: target.path) {
+                showLibraryMessage(
+                    "An item with that name already exists",
+                    "\(target.lastPathComponent) is already in \(destination.lastPathComponent)."
+                )
+                return false
+            }
+        }
+
+        do {
+            for url in candidates {
+                let target = destination.appendingPathComponent(url.lastPathComponent)
+                if isInternal {
+                    try fm.moveItem(at: url, to: target)
+                } else {
+                    try fm.copyItem(at: url, to: target)
+                }
+            }
+            reloadAll()
+            return true
+        } catch {
+            showError(isInternal ? "Couldn't move item" : "Couldn't import GIF", error)
+            reloadAll()
+            return false
+        }
+    }
+
+    private func showLibraryMessage(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func reloadAll() {
@@ -470,9 +525,10 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         let gifs = menuContext.urls.filter { !isFolder($0) }
         guard let gif = gifs.first else { return }
 
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             do {
-                let (movURL, width) = try await Task.detached {
+                let (movURL, pixelWidth) = try await Task.detached {
                     try GifImporter.makeVideo(from: gif)
                 }.value
                 await MainActor.run {
@@ -485,7 +541,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
                         counter += 1
                     }
                     let controller = TrimWindowController(
-                        videoURL: movURL, pointWidth: width, outputGifURL: target
+                        videoURL: movURL, outputWidth: .pixels(pixelWidth), outputGifURL: target
                     ) { [weak self] result in
                         self?.trimController = nil
                         if case .failed(let error) = result {
@@ -643,7 +699,14 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
             indexPath: proposedIndexPath.pointee as IndexPath,
             dropOperation: dropOperation.pointee
         ) else { return [] }
-        let movable = draggedFileURLs(draggingInfo).contains {
+        let urls = draggedFileURLs(draggingInfo)
+        let isInternal = Self.isInternalLibraryDrag(draggingInfo)
+        guard !urls.isEmpty else { return [] }
+        if !isInternal {
+            guard urls.allSatisfy({ !isFolder($0) && $0.pathExtension.lowercased() == "gif" }) else { return [] }
+            return .copy
+        }
+        let movable = urls.contains {
             $0.deletingLastPathComponent().standardizedFileURL != destination.standardizedFileURL
                 && $0.standardizedFileURL != destination.standardizedFileURL
         }
@@ -659,8 +722,15 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
         guard let destination = gridDropDestination(indexPath: indexPath, dropOperation: dropOperation) else {
             return false
         }
-        moveURLs(draggedFileURLs(draggingInfo), into: destination)
-        return true
+        return transferURLs(
+            draggedFileURLs(draggingInfo),
+            into: destination,
+            isInternal: Self.isInternalLibraryDrag(draggingInfo)
+        )
+    }
+
+    private static func isInternalLibraryDrag(_ info: NSDraggingInfo) -> Bool {
+        info.draggingSource is KeyHandlingCollectionView || info.draggingSource is ColumnTableView
     }
 }
 
@@ -675,7 +745,7 @@ final class LibraryColumn: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var isFolderCheck: ((URL) -> Bool) = { _ in false }
     var onSelectionChange: ((LibraryColumn) -> Void)?
     var onDoubleClick: ((URL) -> Void)?
-    var onMove: (([URL], URL) -> Void)?
+    var onTransfer: (([URL], URL, Bool) -> Bool)?
     var onSpace: (() -> Void)? {
         didSet { tableView.onSpaceKey = onSpace }
     }
@@ -811,6 +881,14 @@ final class LibraryColumn: NSView, NSTableViewDataSource, NSTableViewDelegate {
         } else {
             tableView.setDropRow(-1, dropOperation: .on) // highlight the whole column
         }
+        let isInternal = Self.isInternalLibraryDrag(info)
+        if !isInternal {
+            let gifsOnly = urls.allSatisfy {
+                $0.pathExtension.lowercased() == "gif"
+                    && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
+            }
+            return gifsOnly ? .copy : []
+        }
         let movable = urls.contains {
             $0.deletingLastPathComponent().standardizedFileURL != destination.standardizedFileURL
                 && $0.standardizedFileURL != destination.standardizedFileURL
@@ -833,8 +911,11 @@ final class LibraryColumn: NSView, NSTableViewDataSource, NSTableViewDelegate {
         if dropOperation == .on, items.indices.contains(row), isFolderCheck(items[row]) {
             destination = items[row]
         }
-        onMove?(urls, destination)
-        return true
+        return onTransfer?(urls, destination, Self.isInternalLibraryDrag(info)) ?? false
+    }
+
+    private static func isInternalLibraryDrag(_ info: NSDraggingInfo) -> Bool {
+        info.draggingSource is KeyHandlingCollectionView || info.draggingSource is ColumnTableView
     }
 }
 

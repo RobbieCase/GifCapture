@@ -12,15 +12,20 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.5.1"
+VERSION="0.5.2"
+BUILD_NUMBER="502"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+MODULE_CACHE_DIR=".build/module-cache"
 
-mkdir -p "$BUILD_DIR"
+mkdir -p "$BUILD_DIR" "$MODULE_CACHE_DIR"
 
 echo "Compiling..."
 swiftc -O \
   Sources/GifCapture/*.swift \
+  -sdk "$SDK_PATH" \
+  -module-cache-path "$MODULE_CACHE_DIR" \
   -o "$BUILD_DIR/$APP_NAME" \
   -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz
 
@@ -31,12 +36,28 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 if [ -f "Resources/AppIcon.icns" ]; then
   cp "Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
+if [ -f "Resources/library-icon.png" ]; then
+  cp "Resources/library-icon.png" "$APP_DIR/Contents/Resources/library-icon.png"
+fi
 # Bundle the official (universal, self-contained) gifski binary so installs
 # on other Macs don't need Homebrew.
 if [ -f "Resources/bin/gifski" ]; then
   mkdir -p "$APP_DIR/Contents/Resources/bin"
   cp "Resources/bin/gifski" "$APP_DIR/Contents/Resources/bin/gifski"
   chmod +x "$APP_DIR/Contents/Resources/bin/gifski"
+fi
+
+# Prefer the stable local identity so TCC (Screen Recording) grants survive
+# rebuilds. Record the build kind in Info.plist; parsing codesign's Authority
+# output is unreliable for locally issued certificates.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "GifCapture Local Dev"; then
+  SIGN_ID="GifCapture Local Dev"
+  BUILD_KIND="development"
+  echo "Signing with stable local identity..."
+else
+  SIGN_ID="-"
+  BUILD_KIND="release"
+  echo "Ad-hoc signing..."
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -59,7 +80,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key>
     <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD_NUMBER</string>
+    <key>GifCaptureBuildKind</key>
+    <string>$BUILD_KIND</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -69,18 +92,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-
-# Prefer the stable local identity so TCC (Screen Recording) grants survive
-# rebuilds; fall back to ad-hoc when it isn't in the keychain (e.g. other Macs).
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "GifCapture Local Dev"; then
-  SIGN_ID="GifCapture Local Dev"
-  echo "Signing with stable local identity..."
-else
-  SIGN_ID="-"
-  echo "Ad-hoc signing..."
-fi
 # The project lives in an iCloud-synced folder whose file provider tags files
 # with metadata mid-build; codesign rejects it as "detritus". Clear and retry.
+xattr -cr "$APP_DIR" 2>/dev/null || true
 for attempt in 1 2 3; do
   if codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR" 2>/dev/null; then
     break
@@ -106,6 +120,9 @@ mkdir -p "$DIST_DIR"
 for attempt in 1 2 3; do
   rm -rf "$DIST_DIR/$APP_NAME.app"
   ditto --noextattr --noacl --norsrc "$APP_DIR" "$DIST_DIR/$APP_NAME.app"
+  # Distribution builds must allow the updater even when the local build used
+  # the development certificate.
+  plutil -replace GifCaptureBuildKind -string release "$DIST_DIR/$APP_NAME.app/Contents/Info.plist"
   if codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_DIR/$APP_NAME.app" 2>/dev/null; then
     break
   fi
@@ -124,7 +141,9 @@ echo "Distribution zip (ad-hoc signed, for releases): $DIST_DIR/$APP_NAME.zip"
 echo "Built $APP_DIR"
 
 INSTALL_DIR="/Applications/$APP_NAME.app"
-if [ -w /Applications ] || [ -w "$INSTALL_DIR" ]; then
+if [ "${SKIP_INSTALL:-0}" = "1" ]; then
+  echo "Skipped installing to /Applications (SKIP_INSTALL=1)"
+elif [ -w /Applications ] || [ -w "$INSTALL_DIR" ]; then
   echo "Installing to $INSTALL_DIR..."
   pkill -f "$INSTALL_DIR/Contents/MacOS/$APP_NAME" 2>/dev/null || true
   rm -rf "$INSTALL_DIR"

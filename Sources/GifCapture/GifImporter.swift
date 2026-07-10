@@ -4,7 +4,7 @@ import ImageIO
 /// Converts an existing GIF back into an H.264 .mov (preserving per-frame
 /// timing) so it can go through the trim window and re-encode pipeline.
 enum GifImporter {
-    static func makeVideo(from gifURL: URL) throws -> (url: URL, pointWidth: Int) {
+    static func makeVideo(from gifURL: URL) throws -> (url: URL, pixelWidth: Int) {
         guard let source = CGImageSourceCreateWithURL(gifURL as CFURL, nil),
               CGImageSourceGetCount(source) > 0,
               let firstFrame = CGImageSourceCreateImageAtIndex(source, 0, nil)

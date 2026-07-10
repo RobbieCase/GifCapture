@@ -14,6 +14,8 @@ output is a shareable GIF instead of a .mov.
   records the selected region to a temporary H.264 `.mov` via `AVAssetWriter`.
 - **Conversion**: [gifski](https://gif.ski) (a high-quality Rust GIF encoder) converts
   that video straight to GIF.
+- **Finish**: preview and trim the recording before saving, then organize or
+  re-trim captures in the built-in Library.
 - Output GIFs land in `~/Desktop/GifCaptures/`.
 
 ## Requirements
@@ -74,14 +76,24 @@ Recording) — you may need to quit and relaunch the app after granting it.
    to start over (Esc cancels). Your last selection is remembered and restored
    the next time you record.
 3. Click **Record** (or press Return) to start recording.
-4. While recording, everything outside the box is dimmed (red border marks the
-   capture area) and a timer + **Stop** button sits at the top of the box — click
-   **Stop** when done. The dimming and button are excluded from the capture, so
-   they never appear in the GIF.
-5. The recording is converted to a GIF and revealed in Finder.
+4. While recording, everything outside the box is dimmed. Use **Zoom** to follow
+   the cursor at 2×, or **Pen** to draw fading annotations directly into the GIF.
+   The controls themselves are excluded from the capture.
+5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
+6. The finished GIF is revealed in Finder and appears in **Library…**.
 
 Encoder, quality, frame rate, and output size are configurable via the menu bar
 icon → **Settings…**.
+
+## Library
+
+Open **Library…** from the menu bar to browse captures as a thumbnail grid or
+Miller columns. Space opens Quick Look; context menus provide Trim, Copy, Reveal,
+and Move to Trash. Drag captures between Library folders to reorganize them, or
+drag a GIF from Finder into the Library to import a copy without moving the original.
+
+GifCapture checks GitHub Releases for updates shortly after launch. You can also
+run a manual check from **Check for Updates…**.
 
 ## Project layout
 
@@ -93,7 +105,11 @@ Sources/GifCapture/
   SelectionOverlayView.swift    draws the dimmed overlay + selection rectangle
   ScreenRecorder.swift          ScreenCaptureKit capture -> AVAssetWriter (.mov)
   GifConverter.swift            shells out to gifski/ffmpeg to produce the .gif
-  RecordingOverlayController.swift  recording dim overlay + anchored Stop control
+  GifImporter.swift             existing GIF -> temporary video for re-trimming
+  RecordingOverlayController.swift  recording controls, zoom, and pen annotations
+  TrimWindowController.swift    preview, range trim, and GIF save flow
+  LibraryWindowController.swift grid/column Library, Quick Look, and organization
+  UpdateChecker.swift           GitHub release checking and validated self-update
 scripts/build_app.sh            compiles + assembles + ad-hoc signs the .app
 ```
 

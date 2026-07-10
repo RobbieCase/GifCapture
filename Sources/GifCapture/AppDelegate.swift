@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func presentTrimWindow(videoURL: URL) {
         let controller = TrimWindowController(
             videoURL: videoURL,
-            pointWidth: lastSelectionPointWidth
+            outputWidth: .screenPoints(lastSelectionPointWidth)
         ) { [weak self] result in
             self?.trimController = nil
             switch result {

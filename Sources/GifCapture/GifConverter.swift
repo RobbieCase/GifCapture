@@ -14,6 +14,23 @@ enum GifConverterError: LocalizedError {
     }
 }
 
+enum GifOutputWidth {
+    /// New screen recordings are measured in AppKit points and honor the
+    /// user's 1x/2x output-size preference.
+    case screenPoints(Int)
+    /// Imported GIFs already have a concrete pixel width and preserve it.
+    case pixels(Int)
+
+    func pixels(using settings: AppSettings) -> Int {
+        switch self {
+        case .screenPoints(let width):
+            return max(2, width * settings.scale.rawValue)
+        case .pixels(let width):
+            return max(2, width)
+        }
+    }
+}
+
 enum GifConverter {
     static let outputDirectory: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -23,13 +40,12 @@ enum GifConverter {
         return dir
     }()
 
-    /// - Parameter pointWidth: the selection width in screen points; combined with the
-    ///   output-scale setting to size the GIF (and stop gifski's default ~800px cap
-    ///   from blurring larger captures).
+    /// `outputWidth` distinguishes point-sized screen recordings from existing
+    /// GIFs whose pixel dimensions should be preserved.
     @discardableResult
-    static func convert(videoURL: URL, pointWidth: Int, outputURL explicitOutput: URL? = nil) throws -> URL {
+    static func convert(videoURL: URL, outputWidth: GifOutputWidth, outputURL explicitOutput: URL? = nil) throws -> URL {
         let settings = AppSettings.load()
-        let width = max(2, pointWidth * settings.scale.rawValue)
+        let width = outputWidth.pixels(using: settings)
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
