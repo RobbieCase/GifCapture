@@ -24,7 +24,32 @@ enum UpdateChecker {
         Task { await check(interactive: true) }
     }
 
+    /// True when running the certificate-signed copy from the dev machine's
+    /// build script. Installing a release over it would swap in an ad-hoc
+    /// signature and break the machine's stable Screen Recording grant.
+    private static var isDevSignedCopy: Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["-dv", Bundle.main.bundlePath]
+        let pipe = Pipe()
+        process.standardError = pipe
+        process.standardOutput = Pipe()
+        guard (try? process.run()) != nil else { return false }
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output.contains("Authority=GifCapture Local Dev")
+    }
+
     private static func check(interactive: Bool) async {
+        if isDevSignedCopy {
+            if interactive {
+                await showInfo(
+                    "Development build",
+                    "This copy was built and signed locally — updates come from the build script, so the auto-updater is disabled on this Mac."
+                )
+            }
+            return
+        }
         do {
             var request = URLRequest(url: apiURL)
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
