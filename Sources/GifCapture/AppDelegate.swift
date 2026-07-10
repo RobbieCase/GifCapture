@@ -29,17 +29,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let versionItem = NSMenuItem(title: "Robbie's GifCapture v\(version)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
+        menu.addItem(.separator())
         if recorder?.isRecording == true {
             menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "")
         } else {
             menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Library…", action: #selector(openLibrary), keyEquivalent: "l")
-        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: "Library…", action: #selector(openLibrary), keyEquivalent: "")
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
-        menu.addItem(withTitle: "Quit GifCapture", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit GifCapture", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
     }
