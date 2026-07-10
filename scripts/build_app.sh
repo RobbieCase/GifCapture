@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.4.5"
+VERSION="0.4.6"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
@@ -47,7 +47,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>
     <string>$APP_NAME</string>
     <key>CFBundleDisplayName</key>
-    <string>GifCapture</string>
+    <string>Robbie's GifCapture</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>
