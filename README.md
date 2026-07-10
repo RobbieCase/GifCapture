@@ -1,7 +1,7 @@
 <p align="center">
   <img src="docs/banner.png" alt="Robbie's Gif Capture" width="720">
 </p>
-
+ 
 # Robbie's GifCapture
 
 A tiny macOS menu bar app: drag-select a region of your screen, record it, and it's
