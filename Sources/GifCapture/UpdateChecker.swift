@@ -33,15 +33,11 @@ enum UpdateChecker {
     }
 
     private static func check(interactive: Bool) async {
-        if isDevSignedCopy {
-            if interactive {
-                await showInfo(
-                    "Development build",
-                    "This copy was built and signed locally — updates come from the build script, so the auto-updater is disabled on this Mac."
-                )
-            }
-            return
-        }
+        let isDevelopment = isDevSignedCopy
+        // Never surface automatic update UI for a local build. A manual check,
+        // however, can intentionally return the Mac to the latest GitHub release.
+        if isDevelopment, !interactive { return }
+
         do {
             var request = URLRequest(url: apiURL)
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -63,6 +59,17 @@ enum UpdateChecker {
             }
 
             let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            let notes = (json["body"] as? String ?? "").prefix(400)
+
+            if isDevelopment {
+                await offerReleaseReplacement(
+                    latest: latest,
+                    notes: String(notes),
+                    downloadURL: downloadURL
+                )
+                return
+            }
+
             guard isVersion(latest, newerThan: currentVersion) else {
                 if interactive {
                     await showInfo("You're up to date", "GifCapture v\(currentVersion) is the latest version.")
@@ -70,7 +77,6 @@ enum UpdateChecker {
                 return
             }
 
-            let notes = (json["body"] as? String ?? "").prefix(400)
             await offerUpdate(latest: latest, notes: String(notes), downloadURL: downloadURL)
         } catch {
             if interactive {
@@ -105,6 +111,25 @@ enum UpdateChecker {
                 try await downloadAndInstall(from: downloadURL, expectedVersion: latest)
             } catch {
                 showInfo("Update failed", error.localizedDescription)
+            }
+        }
+    }
+
+    @MainActor
+    private static func offerReleaseReplacement(latest: String, notes: String, downloadURL: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Replace development build?"
+        alert.informativeText = "You're running local development build v\(currentVersion). You can replace it with the latest public GitHub release, v\(latest).\n\nScreen Recording permission will be reset and must be granted again.\n\n\(notes)"
+        alert.addButton(withTitle: "Install GitHub Release v\(latest)")
+        alert.addButton(withTitle: "Keep Development Build")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task {
+            do {
+                try await downloadAndInstall(from: downloadURL, expectedVersion: latest)
+            } catch {
+                showInfo("Revert failed", error.localizedDescription)
             }
         }
     }
@@ -158,7 +183,8 @@ enum UpdateChecker {
         done
         if kill -0 "$parent_pid" 2>/dev/null; then exit 1; fi
         rm -rf "$replacement" "$backup"
-        ditto "$new_app" "$replacement"
+        ditto --noextattr --noacl --norsrc "$new_app" "$replacement"
+        xattr -cr "$replacement" 2>/dev/null || true
         codesign --verify --deep --strict "$replacement"
         mv "$app_path" "$backup"
         if ! mv "$replacement" "$app_path"; then

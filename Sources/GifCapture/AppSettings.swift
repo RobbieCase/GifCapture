@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 enum GifEncoder: String, CaseIterable {
     case gifski
@@ -29,16 +29,33 @@ struct AppSettings {
     var quality: Int // 1–100
     var fps: Int
     var scale: OutputScale
+    var startRecordingShortcut: KeyboardShortcut
+    var openLibraryShortcut: KeyboardShortcut
+    var zoomModifier: RecordingModifier
+    var drawModifier: RecordingModifier
 
     static let fpsChoices = [10, 12, 15, 20, 24, 30]
 
     static func load() -> AppSettings {
         let d = UserDefaults.standard
+        let zoomModifier = RecordingModifier(rawValue: d.string(forKey: "zoomModifier") ?? "") ?? .control
+        var drawModifier = RecordingModifier(rawValue: d.string(forKey: "drawModifier") ?? "") ?? .shift
+        if drawModifier == zoomModifier {
+            drawModifier = RecordingModifier.allCases.first { $0 != zoomModifier } ?? .shift
+        }
         return AppSettings(
             encoder: GifEncoder(rawValue: d.string(forKey: "encoder") ?? "") ?? .gifski,
             quality: d.object(forKey: "quality") as? Int ?? 90,
             fps: d.object(forKey: "fps") as? Int ?? 15,
-            scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard
+            scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard,
+            startRecordingShortcut: KeyboardShortcut.load(
+                from: d, prefix: "startRecordingShortcut", fallback: .defaultStartRecording
+            ),
+            openLibraryShortcut: KeyboardShortcut.load(
+                from: d, prefix: "openLibraryShortcut", fallback: .defaultOpenLibrary
+            ),
+            zoomModifier: zoomModifier,
+            drawModifier: drawModifier
         )
     }
 
@@ -48,5 +65,9 @@ struct AppSettings {
         d.set(quality, forKey: "quality")
         d.set(fps, forKey: "fps")
         d.set(scale.rawValue, forKey: "scale")
+        startRecordingShortcut.save(to: d, prefix: "startRecordingShortcut")
+        openLibraryShortcut.save(to: d, prefix: "openLibraryShortcut")
+        d.set(zoomModifier.rawValue, forKey: "zoomModifier")
+        d.set(drawModifier.rawValue, forKey: "drawModifier")
     }
 }

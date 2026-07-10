@@ -80,10 +80,18 @@ Recording) — you may need to quit and relaunch the app after granting it.
    the cursor at 2×, or **Pen** to draw fading annotations directly into the GIF.
    The controls themselves are excluded from the capture.
 5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
-6. The finished GIF is revealed in Finder and appears in **Library…**.
+6. The Library opens with the finished GIF at the top of the grid.
 
 Encoder, quality, frame rate, and output size are configurable via the menu bar
 icon → **Settings…**.
+
+### Key bindings
+
+Settings also provides global shortcuts for **Start Recording** and **Open Library**.
+Click either shortcut button, then type a new key combination. The defaults are
+Control–Command–G and Control–Command–L. During recording, the configurable hold
+modifiers activate cursor-following Zoom and click-drag drawing; they default to
+Control and Shift respectively.
 
 ## Library
 
@@ -93,7 +101,9 @@ and Move to Trash. Drag captures between Library folders to reorganize them, or
 drag a GIF from Finder into the Library to import a copy without moving the original.
 
 GifCapture checks GitHub Releases for updates shortly after launch. You can also
-run a manual check from **Check for Updates…**.
+run a manual check from **Check for Updates…**. On a locally signed development
+build, that command offers to replace the test build with the latest public
+GitHub release.
 
 ## Project layout
 

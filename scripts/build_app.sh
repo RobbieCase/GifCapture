@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.5.2"
-BUILD_NUMBER="502"
+VERSION="0.5.3"
+BUILD_NUMBER="503"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
@@ -27,7 +27,7 @@ swiftc -O \
   -sdk "$SDK_PATH" \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -o "$BUILD_DIR/$APP_NAME" \
-  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz
+  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz -framework Carbon
 
 echo "Assembling app bundle..."
 rm -rf "$APP_DIR"
@@ -38,6 +38,9 @@ if [ -f "Resources/AppIcon.icns" ]; then
 fi
 if [ -f "Resources/library-icon.png" ]; then
   cp "Resources/library-icon.png" "$APP_DIR/Contents/Resources/library-icon.png"
+fi
+if [ -f "Resources/library-icon-v2.png" ]; then
+  cp "Resources/library-icon-v2.png" "$APP_DIR/Contents/Resources/library-icon-v2.png"
 fi
 # Bundle the official (universal, self-contained) gifski binary so installs
 # on other Macs don't need Homebrew.
@@ -145,9 +148,22 @@ if [ "${SKIP_INSTALL:-0}" = "1" ]; then
   echo "Skipped installing to /Applications (SKIP_INSTALL=1)"
 elif [ -w /Applications ] || [ -w "$INSTALL_DIR" ]; then
   echo "Installing to $INSTALL_DIR..."
+  PREVIOUS_BUILD_KIND=""
+  if [ -f "$INSTALL_DIR/Contents/Info.plist" ]; then
+    PREVIOUS_BUILD_KIND="$(plutil -extract GifCaptureBuildKind raw "$INSTALL_DIR/Contents/Info.plist" 2>/dev/null || true)"
+  fi
   pkill -f "$INSTALL_DIR/Contents/MacOS/$APP_NAME" 2>/dev/null || true
   rm -rf "$INSTALL_DIR"
-  cp -R "$APP_DIR" "$INSTALL_DIR"
+  # Copy without Finder/resource metadata, then sign the installed copy. An
+  # empty com.apple.FinderInfo xattr is still enough for strict signature
+  # validation (and Screen Recording/TCC) to reject an otherwise valid app.
+  ditto --noextattr --noacl --norsrc "$APP_DIR" "$INSTALL_DIR"
+  xattr -cr "$INSTALL_DIR" 2>/dev/null || true
+  codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$INSTALL_DIR"
+  if [ -n "$PREVIOUS_BUILD_KIND" ] && [ "$PREVIOUS_BUILD_KIND" != "$BUILD_KIND" ]; then
+    echo "Signing mode changed ($PREVIOUS_BUILD_KIND -> $BUILD_KIND); resetting Screen Recording permission..."
+    tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
+  fi
   echo "Installed. Launch it from Launchpad/Spotlight, or: open -a $APP_NAME"
 else
   echo "Skipped installing to /Applications (not writable) — app is at $APP_DIR"

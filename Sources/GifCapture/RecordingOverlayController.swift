@@ -21,12 +21,13 @@ final class RecordingOverlayController: NSObject {
     private weak var zoomButton: NSButton?
     private weak var penButton: NSButton?
     private var swatchButtons: [NSButton] = []
+    private let keyBindings = AppSettings.load()
 
     private let screen: NSScreen
     private let topLeftRect: CGRect
     private let onStop: () -> Void
 
-    /// Fires when the effective zoom state (button OR Control key) changes.
+    /// Fires when the effective zoom state (button or configured hold key) changes.
     var onZoomChange: ((Bool) -> Void)?
 
     private var zoomSticky = false
@@ -156,7 +157,7 @@ final class RecordingOverlayController: NSObject {
         zoom.setButtonType(.pushOnPushOff)
         zoom.bezelStyle = .rounded
         zoom.frame = NSRect(x: 78, y: height / 2 - 12, width: 64, height: 24)
-        zoom.toolTip = "Zoom toward the cursor (or hold Control)"
+        zoom.toolTip = "Zoom toward the cursor (or hold \(keyBindings.zoomModifier.shortName))"
         container.addSubview(zoom)
         zoomButton = zoom
 
@@ -164,7 +165,7 @@ final class RecordingOverlayController: NSObject {
         pen.setButtonType(.pushOnPushOff)
         pen.bezelStyle = .rounded
         pen.frame = NSRect(x: 146, y: height / 2 - 12, width: 56, height: 24)
-        pen.toolTip = "Draw on the recording (or hold Shift and drag)"
+        pen.toolTip = "Draw on the recording (or hold \(keyBindings.drawModifier.shortName) and drag)"
         container.addSubview(pen)
         penButton = pen
 
@@ -286,8 +287,8 @@ final class RecordingOverlayController: NSObject {
 
     private func pollModifiers() {
         let flags = NSEvent.modifierFlags
-        let zoom = zoomSticky || flags.contains(.control)
-        let pen = penSticky || flags.contains(.shift)
+        let zoom = zoomSticky || flags.contains(keyBindings.zoomModifier.eventFlag)
+        let pen = penSticky || flags.contains(keyBindings.drawModifier.eventFlag)
 
         if zoom != lastZoom {
             lastZoom = zoom

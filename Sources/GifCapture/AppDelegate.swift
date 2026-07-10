@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var trimController: TrimWindowController?
     private var libraryController: LibraryWindowController?
     private var lastSelectionPointWidth = 0
+    private let hotKeyManager = GlobalHotKeyManager()
+    private var isCapturingShortcut = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = CGRequestScreenCaptureAccess()
@@ -20,6 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "GifCapture")
         }
         rebuildMenu()
+        configureGlobalShortcuts(showErrors: false)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(settingsChanged(_:)),
+            name: .gifCaptureSettingsChanged, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(shortcutCaptureBegan(_:)),
+            name: .shortcutCaptureBegan, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(shortcutCaptureEnded(_:)),
+            name: .shortcutCaptureEnded, object: nil
+        )
         UpdateChecker.checkOnLaunch()
     }
 
@@ -37,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         let libraryItem = NSMenuItem(title: "Library…", action: #selector(openLibrary), keyEquivalent: "")
-        libraryItem.image = NSImage(systemSymbolName: "book.closed", accessibilityDescription: "Library")
+        libraryItem.image = libraryMenuImage()
         menu.addItem(libraryItem)
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
@@ -48,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startSelection() {
+        guard recorder == nil, selectionController == nil else { return }
         selectionController = SelectionOverlayController { [weak self] result in
             self?.selectionController = nil
             guard let self, let result else { return }
@@ -121,8 +137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] result in
             self?.trimController = nil
             switch result {
-            case .saved(let gifURL):
-                NSWorkspace.shared.activateFileViewerSelecting([gifURL])
+            case .saved:
+                self?.openLibrary()
             case .cancelled:
                 break
             case .failed(let error):
@@ -149,6 +165,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkForUpdates() {
         UpdateChecker.checkInteractive()
+    }
+
+    @objc private func settingsChanged(_ notification: Notification) {
+        guard !isCapturingShortcut else { return }
+        configureGlobalShortcuts(showErrors: true)
+    }
+
+    @objc private func shortcutCaptureBegan(_ notification: Notification) {
+        isCapturingShortcut = true
+        hotKeyManager.clear()
+    }
+
+    @objc private func shortcutCaptureEnded(_ notification: Notification) {
+        isCapturingShortcut = false
+        configureGlobalShortcuts(showErrors: true)
+    }
+
+    private func configureGlobalShortcuts(showErrors: Bool) {
+        hotKeyManager.clear()
+        let settings = AppSettings.load()
+        var unavailable: [String] = []
+        if !hotKeyManager.register(id: 1, shortcut: settings.startRecordingShortcut, action: { [weak self] in
+            self?.startSelection()
+        }) {
+            unavailable.append("Start Recording (\(settings.startRecordingShortcut.displayName))")
+        }
+        if !hotKeyManager.register(id: 2, shortcut: settings.openLibraryShortcut, action: { [weak self] in
+            self?.openLibrary()
+        }) {
+            unavailable.append("Open Library (\(settings.openLibraryShortcut.displayName))")
+        }
+        guard showErrors, !unavailable.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Shortcut unavailable"
+        alert.informativeText = unavailable.joined(separator: "\n")
+            + "\n\nThat shortcut may already be registered by macOS or another app."
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    private func libraryMenuImage() -> NSImage? {
+        for resource in ["library-icon-v2", "library-icon"] {
+            guard let url = Bundle.main.url(forResource: resource, withExtension: "png"),
+                  let image = NSImage(contentsOf: url) else { continue }
+            image.size = NSSize(width: 16, height: 16)
+            image.isTemplate = true
+            image.accessibilityDescription = "Library"
+            return image
+        }
+        return NSImage(systemSymbolName: "book.closed", accessibilityDescription: "Library")
     }
 
     @objc private func quit() {
