@@ -50,7 +50,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "📚 Library"
+        window.title = "Library"
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 480, height: 320)
         self.init(window: window)
@@ -163,6 +163,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
             topBar.topAnchor.constraint(equalTo: content.topAnchor),
             topBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            topBar.heightAnchor.constraint(equalToConstant: 40),
             contentContainer.topAnchor.constraint(equalTo: topBar.bottomAnchor),
             contentContainer.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
@@ -712,6 +713,9 @@ final class LibraryColumn: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
+        // NSBox's 1x1 intrinsic size would otherwise pull the whole column
+        // (and window) toward 1pt tall via the pinned top/bottom edges.
+        separator.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
 
         addSubview(scroll)
         addSubview(separator)

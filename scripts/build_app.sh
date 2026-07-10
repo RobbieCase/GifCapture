@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.5.0"
+VERSION="0.5.1"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
@@ -79,7 +79,20 @@ else
   SIGN_ID="-"
   echo "Ad-hoc signing..."
 fi
-codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR"
+# The project lives in an iCloud-synced folder whose file provider tags files
+# with metadata mid-build; codesign rejects it as "detritus". Clear and retry.
+for attempt in 1 2 3; do
+  if codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR" 2>/dev/null; then
+    break
+  fi
+  if [ "$attempt" = 3 ]; then
+    echo "ERROR: codesign failed after 3 attempts" >&2
+    exit 1
+  fi
+  echo "codesign attempt $attempt failed; clearing metadata and retrying..."
+  xattr -cr "$APP_DIR" 2>/dev/null || true
+  sleep 1
+done
 
 # Distribution copy: ALWAYS ad-hoc signed. Other Macs don't trust the local
 # certificate, and macOS won't persist TCC grants for an app whose signature

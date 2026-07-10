@@ -36,7 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "📚 Library…", action: #selector(openLibrary), keyEquivalent: "")
+        let libraryItem = NSMenuItem(title: "Library…", action: #selector(openLibrary), keyEquivalent: "")
+        libraryItem.image = NSImage(systemSymbolName: "book.closed", accessibilityDescription: "Library")
+        menu.addItem(libraryItem)
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
