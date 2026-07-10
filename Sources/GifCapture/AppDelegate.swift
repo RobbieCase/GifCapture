@@ -36,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
         }
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Library…", action: #selector(openLibrary), keyEquivalent: "")
+        menu.addItem(withTitle: "📚 Library…", action: #selector(openLibrary), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
