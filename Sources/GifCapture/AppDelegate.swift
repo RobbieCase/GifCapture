@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingOverlay: RecordingOverlayController?
     private var settingsController: SettingsWindowController?
     private var trimController: TrimWindowController?
+    private var libraryController: LibraryWindowController?
     private var lastSelectionPointWidth = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "GifCapture")
         }
         rebuildMenu()
+        UpdateChecker.checkOnLaunch()
     }
 
     private func rebuildMenu() {
@@ -34,9 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
         }
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Library…", action: #selector(openLibrary), keyEquivalent: "l")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(withTitle: "Open Output Folder", action: #selector(openOutputFolder), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(withTitle: "Quit GifCapture", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
@@ -58,6 +61,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let overlay = RecordingOverlayController(screen: result.screen, topLeftRect: result.rect) { [weak self] in
             self?.stopRecording()
+        }
+        overlay.onZoomChange = { [weak recorder] active in
+            recorder?.zoomActive = active
         }
         overlay.show()
         recordingOverlay = overlay
@@ -132,8 +138,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsController?.show()
     }
 
-    @objc private func openOutputFolder() {
-        NSWorkspace.shared.open(GifConverter.outputDirectory)
+    @objc private func openLibrary() {
+        if libraryController == nil {
+            libraryController = LibraryWindowController()
+        }
+        libraryController?.show()
+    }
+
+    @objc private func checkForUpdates() {
+        UpdateChecker.checkInteractive()
     }
 
     @objc private func quit() {

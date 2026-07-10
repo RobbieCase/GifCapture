@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.3.2"
+VERSION="0.4.0"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 
@@ -87,9 +87,22 @@ codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR"
 DIST_DIR=".build/dist"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
-# ditto without extended attributes: codesign rejects copied Finder metadata
-ditto --noextattr --noacl --norsrc "$APP_DIR" "$DIST_DIR/$APP_NAME.app"
-codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_DIR/$APP_NAME.app"
+# ditto without extended attributes: codesign rejects copied Finder metadata.
+# macOS sometimes re-tags fresh files with provenance xattrs mid-copy (race),
+# so retry a few times.
+for attempt in 1 2 3; do
+  rm -rf "$DIST_DIR/$APP_NAME.app"
+  ditto --noextattr --noacl --norsrc "$APP_DIR" "$DIST_DIR/$APP_NAME.app"
+  if codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_DIR/$APP_NAME.app" 2>/dev/null; then
+    break
+  fi
+  if [ "$attempt" = 3 ]; then
+    echo "ERROR: dist codesign failed after 3 attempts" >&2
+    exit 1
+  fi
+  echo "dist codesign attempt $attempt failed; retrying..."
+  sleep 1
+done
 # Zip without extended attributes — macOS re-tags signed files with provenance
 # xattrs that read as "detritus" and break signature verification on other Macs.
 ditto --noextattr --noacl --norsrc -c -k --keepParent "$DIST_DIR/$APP_NAME.app" "$DIST_DIR/$APP_NAME.zip"

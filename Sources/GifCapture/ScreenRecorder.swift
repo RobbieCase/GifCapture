@@ -1,9 +1,18 @@
 import AppKit
 import AVFoundation
+import CoreImage
 import ScreenCaptureKit
 
 final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var isRecording = false
+
+    /// Toggled from the main thread while recording; read per-frame on the capture queue.
+    var zoomActive = false
+    private var currentZoom: CGFloat = 1.0
+    private var captureRect: CGRect = .zero      // top-left origin, points, display-relative
+    private var displayBounds: CGRect = .zero    // CG global coords (top-left origin)
+    private var scaleFactor: CGFloat = 2
+    private lazy var ciContext = CIContext()
 
     private var stream: SCStream?
     private var assetWriter: AVAssetWriter?
@@ -16,6 +25,12 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let scale = matchingScreen(for: display)?.backingScaleFactor ?? 2
         let pixelWidth = max(2, Int((rect.width * scale).rounded()))
         let pixelHeight = max(2, Int((rect.height * scale).rounded()))
+
+        captureRect = rect
+        displayBounds = CGDisplayBounds(display.displayID)
+        scaleFactor = scale
+        currentZoom = 1.0
+        zoomActive = false
 
         let content = try await SCShareableContent.current
         let excludedWindows = content.windows.filter { excludingWindowIDs.contains($0.windowID) }
@@ -96,7 +111,44 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
 
         guard input.isReadyForMoreMediaData else { return }
-        adaptor.append(imageBuffer, withPresentationTime: pts)
+        adaptor.append(processedBuffer(from: imageBuffer), withPresentationTime: pts)
+    }
+
+    /// Applies the animated cursor-tracked zoom, rendering into a fresh buffer
+    /// from the adaptor's pool. Returns the source buffer untouched at 1x.
+    private func processedBuffer(from source: CVImageBuffer) -> CVImageBuffer {
+        let target: CGFloat = zoomActive ? 2.0 : 1.0
+        if abs(currentZoom - target) > 0.004 {
+            currentZoom += (target - currentZoom) * 0.16
+        } else {
+            currentZoom = target
+        }
+        guard currentZoom > 1.01, let pool = pixelBufferAdaptor?.pixelBufferPool else { return source }
+
+        let width = CGFloat(CVPixelBufferGetWidth(source))
+        let height = CGFloat(CVPixelBufferGetHeight(source))
+
+        // Cursor position in capture-space pixels (top-left origin), via CG global coords.
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let cx = (cursor.x - displayBounds.minX - captureRect.minX) * scaleFactor
+        let cyTop = (cursor.y - displayBounds.minY - captureRect.minY) * scaleFactor
+
+        let visibleW = width / currentZoom
+        let visibleH = height / currentZoom
+        let originX = min(max(cx - visibleW / 2, 0), width - visibleW)
+        let originYTop = min(max(cyTop - visibleH / 2, 0), height - visibleH)
+        let originY = height - originYTop - visibleH // CoreImage is bottom-left origin
+
+        var output: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &output)
+        guard let output else { return source }
+
+        let image = CIImage(cvImageBuffer: source)
+            .cropped(to: CGRect(x: originX, y: originY, width: visibleW, height: visibleH))
+            .transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
+            .transformed(by: CGAffineTransform(scaleX: currentZoom, y: currentZoom))
+        ciContext.render(image, to: output)
+        return output
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

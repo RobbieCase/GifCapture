@@ -1,0 +1,371 @@
+import AppKit
+import UniformTypeIdentifiers
+
+/// Finder-like browser for ~/Desktop/GifCaptures: thumbnail grid of GIFs and
+/// folders, folder navigation, New Folder, drag GIFs onto folders to move them,
+/// and drag out to other apps.
+final class LibraryWindowController: NSWindowController, NSWindowDelegate {
+    private var currentFolder: URL = GifConverter.outputDirectory
+    private var items: [URL] = []
+
+    private var collectionView: NSCollectionView!
+    private var backButton: NSButton!
+    private var pathLabel: NSTextField!
+    private var folderWatcher: DispatchSourceFileSystemObject?
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 480),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "GifCapture Library"
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 480, height: 320)
+        self.init(window: window)
+        window.delegate = self
+        buildUI()
+    }
+
+    func show() {
+        navigate(to: GifConverter.outputDirectory)
+        window?.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        stopWatching()
+    }
+
+    // MARK: - UI
+
+    private func buildUI() {
+        backButton = NSButton(
+            image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back")!,
+            target: self, action: #selector(goBack)
+        )
+        backButton.bezelStyle = .texturedRounded
+        backButton.isEnabled = false
+
+        pathLabel = NSTextField(labelWithString: "GifCaptures")
+        pathLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        pathLabel.lineBreakMode = .byTruncatingHead
+
+        let newFolderButton = NSButton(title: "New Folder", target: self, action: #selector(newFolder))
+        newFolderButton.bezelStyle = .texturedRounded
+
+        let revealButton = NSButton(title: "Show in Finder", target: self, action: #selector(revealCurrent))
+        revealButton.bezelStyle = .texturedRounded
+
+        let topBar = NSStackView(views: [backButton, pathLabel, NSView(), newFolderButton, revealButton])
+        topBar.orientation = .horizontal
+        topBar.spacing = 8
+        topBar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+
+        let layout = NSCollectionViewFlowLayout()
+        layout.itemSize = NSSize(width: 130, height: 130)
+        layout.minimumInteritemSpacing = 10
+        layout.minimumLineSpacing = 14
+        layout.sectionInset = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
+
+        collectionView = NSCollectionView()
+        collectionView.collectionViewLayout = layout
+        collectionView.dataSource = self
+        collectionView.delegate = self
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = true
+        collectionView.backgroundColors = [.clear]
+        collectionView.register(LibraryCell.self, forItemWithIdentifier: LibraryCell.identifier)
+        collectionView.setDraggingSourceOperationMask(.copy, forLocal: false)
+        collectionView.setDraggingSourceOperationMask(.move, forLocal: true)
+        collectionView.registerForDraggedTypes([.fileURL])
+
+        let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick(_:)))
+        doubleClick.numberOfClicksRequired = 2
+        doubleClick.delaysPrimaryMouseButtonEvents = false
+        collectionView.addGestureRecognizer(doubleClick)
+
+        let scroll = NSScrollView()
+        scroll.documentView = collectionView
+        scroll.hasVerticalScroller = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSView()
+        content.addSubview(topBar)
+        content.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            topBar.topAnchor.constraint(equalTo: content.topAnchor),
+            topBar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        window?.contentView = content
+
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open", action: #selector(contextOpen), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show in Finder", action: #selector(contextReveal), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Copy", action: #selector(contextCopy), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Move to Trash", action: #selector(contextTrash), keyEquivalent: "").target = self
+        collectionView.menu = menu
+    }
+
+    // MARK: - Data
+
+    private func navigate(to folder: URL) {
+        currentFolder = folder
+        reload()
+        watch(folder: folder)
+
+        let base = GifConverter.outputDirectory.path
+        let relative = folder.path.replacingOccurrences(of: base, with: "GifCaptures")
+        pathLabel.stringValue = relative.replacingOccurrences(of: "/", with: " › ")
+        backButton.isEnabled = folder.standardizedFileURL != GifConverter.outputDirectory.standardizedFileURL
+    }
+
+    private func reload() {
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(
+            at: currentFolder,
+            includingPropertiesForKeys: [.isDirectoryKey, .creationDateKey],
+            options: .skipsHiddenFiles
+        )) ?? []
+
+        let folders = contents
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        let gifs = contents
+            .filter { $0.pathExtension.lowercased() == "gif" }
+            .sorted {
+                let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return a > b
+            }
+        items = folders + gifs
+        collectionView.reloadData()
+    }
+
+    /// Live-refresh when recordings land or files change while the window is open.
+    private func watch(folder: URL) {
+        stopWatching()
+        let fd = open(folder.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write], queue: .main
+        )
+        source.setEventHandler { [weak self] in self?.reload() }
+        source.setCancelHandler { Darwin.close(fd) }
+        source.resume()
+        folderWatcher = source
+    }
+
+    private func stopWatching() {
+        folderWatcher?.cancel()
+        folderWatcher = nil
+    }
+
+    private func isFolder(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private func selectedURLs() -> [URL] {
+        collectionView.selectionIndexPaths.compactMap { items.indices.contains($0.item) ? items[$0.item] : nil }
+    }
+
+    // MARK: - Actions
+
+    @objc private func goBack() {
+        navigate(to: currentFolder.deletingLastPathComponent())
+    }
+
+    @objc private func newFolder() {
+        let alert = NSAlert()
+        alert.messageText = "New Folder"
+        alert.informativeText = "Name the new folder:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = "New Folder"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var target = currentFolder.appendingPathComponent(name)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: target.path) {
+            target = currentFolder.appendingPathComponent("\(name) \(counter)")
+            counter += 1
+        }
+        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        reload()
+    }
+
+    @objc private func revealCurrent() {
+        NSWorkspace.shared.open(currentFolder)
+    }
+
+    @objc private func handleDoubleClick(_ gesture: NSClickGestureRecognizer) {
+        let point = gesture.location(in: collectionView)
+        guard let indexPath = collectionView.indexPathForItem(at: point),
+              items.indices.contains(indexPath.item) else { return }
+        let url = items[indexPath.item]
+        if isFolder(url) {
+            navigate(to: url)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func contextOpen() {
+        selectedURLs().forEach { url in
+            if isFolder(url) { navigate(to: url) } else { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    @objc private func contextReveal() {
+        NSWorkspace.shared.activateFileViewerSelecting(selectedURLs())
+    }
+
+    @objc private func contextCopy() {
+        let urls = selectedURLs()
+        guard !urls.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(urls as [NSURL])
+    }
+
+    @objc private func contextTrash() {
+        for url in selectedURLs() {
+            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }
+        reload()
+    }
+}
+
+// MARK: - Collection view data source / delegate
+
+extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewDelegate {
+    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
+        items.count
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        let cell = collectionView.makeItem(withIdentifier: LibraryCell.identifier, for: indexPath)
+        guard let libraryCell = cell as? LibraryCell, items.indices.contains(indexPath.item) else { return cell }
+        libraryCell.configure(with: items[indexPath.item], isFolder: isFolder(items[indexPath.item]))
+        return cell
+    }
+
+    func collectionView(_ collectionView: NSCollectionView, pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
+        guard items.indices.contains(indexPath.item) else { return nil }
+        return items[indexPath.item] as NSURL
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        validateDrop draggingInfo: NSDraggingInfo,
+        proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+        dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+    ) -> NSDragOperation {
+        let index = proposedIndexPath.pointee.item
+        guard dropOperation.pointee == .on, items.indices.contains(index), isFolder(items[index]) else {
+            return []
+        }
+        return .move
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        acceptDrop draggingInfo: NSDraggingInfo,
+        indexPath: IndexPath,
+        dropOperation: NSCollectionView.DropOperation
+    ) -> Bool {
+        guard items.indices.contains(indexPath.item) else { return false }
+        let destination = items[indexPath.item]
+        guard isFolder(destination) else { return false }
+
+        let urls = draggingInfo.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
+
+        var moved = false
+        for url in urls where url.standardizedFileURL != destination.standardizedFileURL {
+            let target = destination.appendingPathComponent(url.lastPathComponent)
+            if (try? FileManager.default.moveItem(at: url, to: target)) != nil {
+                moved = true
+            }
+        }
+        reload()
+        return moved
+    }
+}
+
+// MARK: - Grid cell
+
+final class LibraryCell: NSCollectionViewItem {
+    static let identifier = NSUserInterfaceItemIdentifier("LibraryCell")
+
+    private let thumbView = NSImageView()
+    private let nameLabel = NSTextField(labelWithString: "")
+
+    override func loadView() {
+        let root = NSView()
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 8
+
+        thumbView.imageScaling = .scaleProportionallyDown
+        thumbView.translatesAutoresizingMaskIntoConstraints = false
+        thumbView.unregisterDraggedTypes() // let the collection view own drag & drop
+
+        nameLabel.font = .systemFont(ofSize: 11)
+        nameLabel.alignment = .center
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        root.addSubview(thumbView)
+        root.addSubview(nameLabel)
+        NSLayoutConstraint.activate([
+            thumbView.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
+            thumbView.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            thumbView.widthAnchor.constraint(equalToConstant: 96),
+            thumbView.heightAnchor.constraint(equalToConstant: 88),
+            nameLabel.topAnchor.constraint(equalTo: thumbView.bottomAnchor, constant: 4),
+            nameLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
+            nameLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
+        ])
+        view = root
+    }
+
+    func configure(with url: URL, isFolder: Bool) {
+        nameLabel.stringValue = url.lastPathComponent
+        if isFolder {
+            thumbView.image = NSWorkspace.shared.icon(for: .folder)
+        } else {
+            thumbView.image = NSWorkspace.shared.icon(forFile: url.path)
+            let itemURL = url
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let image = NSImage(contentsOf: itemURL) else { return }
+                DispatchQueue.main.async {
+                    guard self?.nameLabel.stringValue == itemURL.lastPathComponent else { return }
+                    self?.thumbView.image = image
+                }
+            }
+        }
+    }
+
+    override var isSelected: Bool {
+        didSet {
+            view.layer?.backgroundColor = isSelected
+                ? NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor
+                : NSColor.clear.cgColor
+        }
+    }
+}
