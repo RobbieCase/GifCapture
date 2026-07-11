@@ -36,6 +36,8 @@ final class RecordingOverlayController: NSObject {
     private var lastZoom = false
     private var lastPen = false
     private var indicatorZoom: CGFloat = 1.0
+    private var toolPanelDocked = false
+    private weak var penOptionsButton: NSButton?
 
     init(screen: NSScreen, topLeftRect: CGRect, onStop: @escaping () -> Void) {
         self.screen = screen
@@ -56,6 +58,13 @@ final class RecordingOverlayController: NSObject {
             width: topLeftRect.width,
             height: topLeftRect.height
         )
+
+        // When the box spans the screen, the pen palette can't sit beside it;
+        // it collapses into a HUD button that expands the palette on demand.
+        let toolWidth: CGFloat = 172
+        let fitsRight = localRect.maxX + 10 + toolWidth <= screen.frame.width - 4
+        let fitsLeft = localRect.minX - toolWidth - 10 >= 4
+        toolPanelDocked = !(fitsRight || fitsLeft)
 
         showDimWindow(cutout: localRect)
         showDrawWindow(over: localRect)
@@ -155,8 +164,9 @@ final class RecordingOverlayController: NSObject {
 
     private func showControlPanel(above rect: NSRect) {
         // Zoom and pen are driven by their hold-modifiers (and the tool panel's
-        // pen lock), so the HUD is just the recording indicator and Stop.
-        let width: CGFloat = 200
+        // pen lock), so the HUD is the recording indicator and Stop — plus a
+        // Pen toggle for the collapsed palette when the box spans the screen.
+        let width: CGFloat = toolPanelDocked ? 264 : 200
         let height: CGFloat = 38
         let gap: CGFloat = 10
 
@@ -184,6 +194,16 @@ final class RecordingOverlayController: NSObject {
         container.addSubview(label)
         timeLabel = label
 
+        if toolPanelDocked {
+            let pen = NSButton(title: "Pen", target: self, action: #selector(penOptionsToggled))
+            pen.setButtonType(.pushOnPushOff)
+            pen.bezelStyle = .rounded
+            pen.frame = NSRect(x: width - 134, y: height / 2 - 12, width: 56, height: 24)
+            pen.toolTip = "Show pen options"
+            container.addSubview(pen)
+            penOptionsButton = pen
+        }
+
         let stop = NSButton(title: "Stop", target: self, action: #selector(stopTapped))
         stop.frame = NSRect(x: width - 70, y: height / 2 - 12, width: 60, height: 24)
         stop.bezelStyle = .rounded
@@ -200,19 +220,22 @@ final class RecordingOverlayController: NSObject {
         let gap: CGFloat = 10
 
         // Prefer the right side of the capture box, then the left. When neither
-        // fits (the capture box spans the screen), dock the pen settings just
-        // below the HUD at the top — it's capture-excluded either way.
-        var x = rect.maxX + gap
-        if x + width > screen.frame.width - 4 {
-            x = rect.minX - width - gap
-        }
+        // fits (the capture box spans the screen), the palette collapses under
+        // the HUD, starts invisible, and the HUD's Pen button toggles it. It
+        // must stay technically on-screen the whole time: capture exclusion is
+        // locked in when recording starts, so a truly hidden window would show
+        // up in the GIF if revealed later.
         let origin: NSPoint
-        if x < 4 {
+        if toolPanelDocked {
             var fx = hudFrame.midX - width / 2
             fx = max(screen.frame.origin.x + 4,
                      min(fx, screen.frame.origin.x + screen.frame.width - width - 4))
             origin = NSPoint(x: fx, y: hudFrame.minY - height - 8)
         } else {
+            var x = rect.maxX + gap
+            if x + width > screen.frame.width - 4 {
+                x = rect.minX - width - gap
+            }
             var y = rect.maxY - height
             y = max(4, min(y, screen.frame.height - height - 4))
             origin = NSPoint(x: screen.frame.origin.x + x, y: screen.frame.origin.y + y)
@@ -286,8 +309,19 @@ final class RecordingOverlayController: NSObject {
         lock.toolTip = "Draw without holding \(keyBindings.drawModifier.shortName)"
         container.addSubview(lock)
 
+        if toolPanelDocked {
+            panel.alphaValue = 0.01 // invisible but still on-screen for capture exclusion
+            panel.ignoresMouseEvents = true
+        }
         panel.orderFrontRegardless()
         toolPanel = panel
+    }
+
+    @objc private func penOptionsToggled() {
+        guard let toolPanel else { return }
+        let show = penOptionsButton?.state == .on
+        toolPanel.alphaValue = show ? 1 : 0.01
+        toolPanel.ignoresMouseEvents = !show
     }
 
     private func makePanel(frame: NSRect) -> NSPanel {
