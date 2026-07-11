@@ -32,6 +32,14 @@ enum GifOutputWidth {
 }
 
 enum GifConverter {
+    /// Timestamped destination in the library root; callers that also produce
+    /// sibling files (e.g. an MP4 copy) need the URL before conversion runs.
+    static func makeDefaultOutputURL() -> URL {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        return outputDirectory.appendingPathComponent("GifCapture \(formatter.string(from: Date())).gif")
+    }
+
     static let outputDirectory: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Desktop")
@@ -47,10 +55,7 @@ enum GifConverter {
         let settings = AppSettings.load()
         let width = outputWidth.pixels(using: settings)
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        let name = "GifCapture \(formatter.string(from: Date())).gif"
-        let outputURL = explicitOutput ?? outputDirectory.appendingPathComponent(name)
+        let outputURL = explicitOutput ?? makeDefaultOutputURL()
 
         defer { try? FileManager.default.removeItem(at: videoURL) }
 

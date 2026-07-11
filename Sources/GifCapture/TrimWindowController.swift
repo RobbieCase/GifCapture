@@ -3,7 +3,7 @@ import AVFoundation
 import AVKit
 
 enum TrimResult {
-    case saved(URL)
+    case saved(gif: URL, mp4: URL?)
     case cancelled
     case failed(Error)
 }
@@ -176,15 +176,48 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
                     start: start, end: end, fullDuration: duration
                 )
                 let width = outputWidth
-                let destination = outputGifURL
+                let gifDestination = outputGifURL ?? GifConverter.makeDefaultOutputURL()
+
+                // MP4 copy first: GifConverter deletes the source video when done.
+                var mp4URL: URL?
+                if AppSettings.load().exportMP4 {
+                    let target = gifDestination.deletingPathExtension().appendingPathExtension("mp4")
+                    mp4URL = try await Self.exportMP4(from: trimmedURL, to: target)
+                }
+
                 let gifURL = try await Task.detached {
-                    try GifConverter.convert(videoURL: trimmedURL, outputWidth: width, outputURL: destination)
+                    try GifConverter.convert(videoURL: trimmedURL, outputWidth: width, outputURL: gifDestination)
                 }.value
-                await MainActor.run { self.finish(.saved(gifURL)) }
+                await MainActor.run { self.finish(.saved(gif: gifURL, mp4: mp4URL)) }
             } catch {
                 await MainActor.run { self.finish(.failed(error)) }
             }
         }
+    }
+
+    /// Remuxes the (already H.264) recording into an .mp4 container — fast, no
+    /// re-encode. MP4s are often 10x smaller than the GIF and autoplay in chat apps.
+    private static func exportMP4(from videoURL: URL, to destination: URL) async throws -> URL {
+        let asset = AVURLAsset(url: videoURL)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw NSError(domain: "GifCapture", code: 30,
+                          userInfo: [NSLocalizedDescriptionKey: "Couldn't create MP4 export session"])
+        }
+        try? FileManager.default.removeItem(at: destination)
+        session.outputURL = destination
+        session.outputFileType = .mp4
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.exportAsynchronously {
+                if session.status == .completed {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: session.error ?? NSError(
+                        domain: "GifCapture", code: 31,
+                        userInfo: [NSLocalizedDescriptionKey: "MP4 export failed"]))
+                }
+            }
+        }
+        return destination
     }
 
     @objc private func cancelTapped() {

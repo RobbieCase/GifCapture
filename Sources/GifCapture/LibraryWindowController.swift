@@ -35,6 +35,10 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     /// Set by menuWillOpen so the context-menu actions know their target.
     private var menuContext: (urls: [URL], folder: URL) = ([], GifConverter.outputDirectory)
+    /// Anchor for the share sheet: the view and point that were right-clicked.
+    private weak var shareAnchorView: NSView?
+    private var shareAnchorPoint: NSPoint = .zero
+    private var sharingPicker: NSSharingServicePicker?
 
     private var mode: ViewMode = .grid {
         didSet {
@@ -564,6 +568,18 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.writeObjects(menuContext.urls as [NSURL])
     }
 
+    @objc private func contextShare() {
+        let gifs = menuContext.urls.filter { !isFolder($0) }
+        guard !gifs.isEmpty, let anchorView = shareAnchorView else { return }
+        let picker = NSSharingServicePicker(items: gifs as [NSURL])
+        sharingPicker = picker
+        picker.show(
+            relativeTo: NSRect(origin: shareAnchorPoint, size: NSSize(width: 1, height: 1)),
+            of: anchorView,
+            preferredEdge: .minY
+        )
+    }
+
     @objc private func contextReveal() {
         NSWorkspace.shared.activateFileViewerSelecting(menuContext.urls)
     }
@@ -595,6 +611,8 @@ extension LibraryWindowController: NSMenuDelegate {
             targetFolder = currentFolder
             if let event = NSApp.currentEvent {
                 let point = collectionView.convert(event.locationInWindow, from: nil)
+                shareAnchorView = collectionView
+                shareAnchorPoint = point
                 if let indexPath = collectionView.indexPathForItem(at: point) {
                     if !collectionView.selectionIndexPaths.contains(indexPath) {
                         collectionView.deselectItems(at: collectionView.selectionIndexPaths)
@@ -605,6 +623,10 @@ extension LibraryWindowController: NSMenuDelegate {
             }
         } else if let column = columnViews.first(where: { $0.tableView.menu === menu }) {
             targetFolder = column.folder
+            if let event = NSApp.currentEvent {
+                shareAnchorView = column.tableView
+                shareAnchorPoint = column.tableView.convert(event.locationInWindow, from: nil)
+            }
             let row = column.tableView.clickedRow
             if row >= 0, column.items.indices.contains(row) {
                 if !column.tableView.selectedRowIndexes.contains(row) {
@@ -626,6 +648,8 @@ extension LibraryWindowController: NSMenuDelegate {
             let trim = menu.addItem(withTitle: "Trim…", action: #selector(contextTrim), keyEquivalent: "")
             trim.isEnabled = gifs.count == 1 && clickedURLs.count == 1
             menu.addItem(withTitle: "Copy to Clipboard", action: #selector(contextCopy), keyEquivalent: "")
+            let share = menu.addItem(withTitle: "Share…", action: #selector(contextShare), keyEquivalent: "")
+            share.isEnabled = !gifs.isEmpty
             menu.addItem(.separator())
             menu.addItem(withTitle: "Show in Finder", action: #selector(contextReveal), keyEquivalent: "")
             menu.addItem(.separator())

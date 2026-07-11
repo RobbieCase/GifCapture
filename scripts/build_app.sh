@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.5.5"
-BUILD_NUMBER="505"
+VERSION="0.6.0"
+BUILD_NUMBER="600"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
@@ -27,7 +27,7 @@ swiftc -O \
   -sdk "$SDK_PATH" \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -o "$BUILD_DIR/$APP_NAME" \
-  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz -framework Carbon
+  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz -framework Carbon -framework UserNotifications
 
 echo "Assembling app bundle..."
 rm -rf "$APP_DIR"

@@ -76,14 +76,23 @@ Recording) — you may need to quit and relaunch the app after granting it.
    to start over (Esc cancels). Your last selection is remembered and restored
    the next time you record.
 3. Click **Record** (or press Return) to start recording.
-4. While recording, everything outside the box is dimmed. Use **Zoom** to follow
-   the cursor at 2×, or **Pen** to draw fading annotations directly into the GIF.
+4. While recording, everything outside the box is dimmed. Hold the **zoom
+   modifier** (default Control) to follow the cursor at 2×, or hold the **draw
+   modifier** (default Shift) and drag to ink fading annotations directly into
+   the GIF — the pen palette beside the box (docked under the timer when the box
+   spans the screen) picks the tool, color, fade time, and a "keep pen on" lock.
    The controls themselves are excluded from the capture.
 5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
-6. The Library opens with the finished GIF at the top of the grid.
+6. The GIF is copied to the clipboard (configurable), a notification shows the
+   file size, and the Library opens with it at the top of the grid. The menu
+   bar's **Recent Captures** submenu re-copies any of the last five GIFs —
+   hold Option to reveal one in Finder instead. Right-click a GIF in the
+   Library for the macOS **Share…** sheet.
 
-Encoder, quality, frame rate, output size, cursor visibility, and an optional
-three-second countdown are configurable via the menu bar icon → **Settings…**.
+Encoder, quality, frame rate, output size, clipboard/MP4 export behavior,
+cursor visibility, and an optional three-second countdown are configurable via
+the menu bar icon → **Settings…**. "Also save an MP4 copy" writes a sibling
+.mp4 next to each GIF — often ~10× smaller and it autoplays in chat apps.
 You can also add a colored click indicator to every click, or use its configurable
 modifier binding so only intentional clicks are highlighted.
 

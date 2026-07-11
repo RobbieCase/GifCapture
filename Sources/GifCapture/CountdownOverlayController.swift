@@ -43,11 +43,19 @@ final class CountdownOverlayController {
         container.layer?.cornerRadius = 22
 
         let label = NSTextField(labelWithString: "3")
-        label.frame = container.bounds
         label.alignment = .center
         label.font = .monospacedDigitSystemFont(ofSize: 64, weight: .bold)
         label.textColor = .white
         label.backgroundColor = .clear
+        // A full-bounds text field draws its text at the top; size the field to
+        // the glyph and center that frame so the digit sits centered in the square.
+        label.sizeToFit()
+        label.frame = NSRect(
+            x: 0,
+            y: (size.height - label.frame.height) / 2,
+            width: size.width,
+            height: label.frame.height
+        )
         container.addSubview(label)
         window.contentView = container
 

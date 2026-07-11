@@ -79,6 +79,8 @@ struct AppSettings {
     var quality: Int // 1–100
     var fps: Int
     var scale: OutputScale
+    var autoCopyToClipboard: Bool
+    var exportMP4: Bool
     var countdownEnabled: Bool
     var showCursor: Bool
     var clickIndicatorMode: ClickIndicatorMode
@@ -138,6 +140,8 @@ struct AppSettings {
             quality: d.object(forKey: "quality") as? Int ?? 90,
             fps: d.object(forKey: "fps") as? Int ?? 15,
             scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard,
+            autoCopyToClipboard: d.object(forKey: "autoCopyToClipboard") as? Bool ?? true,
+            exportMP4: d.bool(forKey: "exportMP4"),
             countdownEnabled: d.bool(forKey: "countdownEnabled"),
             showCursor: d.object(forKey: "showCursor") as? Bool ?? true,
             clickIndicatorMode: clickMode,
@@ -163,6 +167,8 @@ struct AppSettings {
         d.set(quality, forKey: "quality")
         d.set(fps, forKey: "fps")
         d.set(scale.rawValue, forKey: "scale")
+        d.set(autoCopyToClipboard, forKey: "autoCopyToClipboard")
+        d.set(exportMP4, forKey: "exportMP4")
         d.set(countdownEnabled, forKey: "countdownEnabled")
         d.set(showCursor, forKey: "showCursor")
         d.set(clickIndicatorMode.rawValue, forKey: "clickIndicatorMode")

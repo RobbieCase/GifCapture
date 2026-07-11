@@ -10,6 +10,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let scalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
+    private let autoCopyCheckbox = NSButton(checkboxWithTitle: "Copy GIF to clipboard after saving", target: nil, action: nil)
+    private let exportMP4Checkbox = NSButton(checkboxWithTitle: "Also save an MP4 copy", target: nil, action: nil)
     private let countdownCheckbox = NSButton(checkboxWithTitle: "3 seconds", target: nil, action: nil)
     private let cursorCheckbox = NSButton(checkboxWithTitle: "Show cursor in recording", target: nil, action: nil)
     private let clickIndicatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -73,6 +75,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let ordinaryControls: [NSControl] = [
             encoderPopup, qualitySlider, fpsPopup, scalePopup,
+            autoCopyCheckbox, exportMP4Checkbox,
             countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
             zoomModifierPopup, drawModifierPopup, clickIndicatorModifierPopup,
         ]
@@ -101,6 +104,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [label("Quality:"), qualityRow],
             [label("Frame rate:"), fpsPopup],
             [label("Output size:"), scalePopup],
+            [label("After saving:"), autoCopyCheckbox],
+            [label("Extras:"), exportMP4Checkbox],
         ])
         configure(grid: outputGrid)
 
@@ -269,6 +274,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         qualityValueLabel.stringValue = String(settings.quality)
         fpsPopup.selectItem(at: AppSettings.fpsChoices.firstIndex(of: settings.fps) ?? 2)
         scalePopup.selectItem(at: OutputScale.allCases.firstIndex(of: settings.scale) ?? 0)
+        autoCopyCheckbox.state = settings.autoCopyToClipboard ? .on : .off
+        exportMP4Checkbox.state = settings.exportMP4 ? .on : .off
         countdownCheckbox.state = settings.countdownEnabled ? .on : .off
         cursorCheckbox.state = settings.showCursor ? .on : .off
         reloadClickIndicatorModeItems()
@@ -304,6 +311,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.quality = qualitySlider.integerValue
         settings.fps = AppSettings.fpsChoices[max(0, fpsPopup.indexOfSelectedItem)]
         settings.scale = OutputScale.allCases[max(0, scalePopup.indexOfSelectedItem)]
+        settings.autoCopyToClipboard = autoCopyCheckbox.state == .on
+        settings.exportMP4 = exportMP4Checkbox.state == .on
         settings.countdownEnabled = countdownCheckbox.state == .on
         settings.showCursor = cursorCheckbox.state == .on
         settings.clickIndicatorMode = ClickIndicatorMode.allCases[max(0, clickIndicatorPopup.indexOfSelectedItem)]

@@ -1,8 +1,10 @@
 import AppKit
 
 /// Shown while recording: dims everything around the capture box and anchors a
-/// timer + Zoom/Pen/Stop controls to the top of the box, plus a pen tool
-/// palette beside it. The dim layer and panels are excluded from the screen
+/// timer + Stop control to the top of the box, plus a pen tool palette beside
+/// it (or docked under the HUD when the box spans the screen). Zoom and pen
+/// activate via their hold-modifiers; the palette's "Keep pen on" replaces the
+/// old sticky Pen button. The dim layer and panels are excluded from the screen
 /// capture (see `captureExcludedWindowIDs`); the pen drawing window
 /// intentionally is NOT, so ink shows up in the GIF.
 final class RecordingOverlayController: NSObject {
@@ -20,8 +22,6 @@ final class RecordingOverlayController: NSObject {
     private var indicatorTimer: Timer?
     private var startTime = Date()
     private weak var timeLabel: NSTextField?
-    private weak var zoomButton: NSButton?
-    private weak var penButton: NSButton?
     private var swatchButtons: [NSButton] = []
     private let keyBindings = AppSettings.load()
 
@@ -32,8 +32,7 @@ final class RecordingOverlayController: NSObject {
     /// Fires when the effective zoom state (button or configured hold key) changes.
     var onZoomChange: ((Bool) -> Void)?
 
-    private var zoomSticky = false
-    private var penSticky = false
+    private var penLock = false
     private var lastZoom = false
     private var lastPen = false
     private var indicatorZoom: CGFloat = 1.0
@@ -61,7 +60,7 @@ final class RecordingOverlayController: NSObject {
         showDimWindow(cutout: localRect)
         showDrawWindow(over: localRect)
         showControlPanel(above: localRect)
-        showToolPanel(beside: localRect)
+        showToolPanel(beside: localRect, hudFrame: panel?.frame ?? .zero)
         installClickIndicatorMonitors()
 
         startTime = Date()
@@ -155,7 +154,9 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func showControlPanel(above rect: NSRect) {
-        let width: CGFloat = 330
+        // Zoom and pen are driven by their hold-modifiers (and the tool panel's
+        // pen lock), so the HUD is just the recording indicator and Stop.
+        let width: CGFloat = 200
         let height: CGFloat = 38
         let gap: CGFloat = 10
 
@@ -183,47 +184,39 @@ final class RecordingOverlayController: NSObject {
         container.addSubview(label)
         timeLabel = label
 
-        let zoom = NSButton(title: "Zoom", target: self, action: #selector(zoomToggled))
-        zoom.setButtonType(.pushOnPushOff)
-        zoom.bezelStyle = .rounded
-        zoom.frame = NSRect(x: 78, y: height / 2 - 12, width: 64, height: 24)
-        zoom.toolTip = "Zoom toward the cursor (or hold \(keyBindings.zoomModifier.shortName))"
-        container.addSubview(zoom)
-        zoomButton = zoom
-
-        let pen = NSButton(title: "Pen", target: self, action: #selector(penToggled))
-        pen.setButtonType(.pushOnPushOff)
-        pen.bezelStyle = .rounded
-        pen.frame = NSRect(x: 146, y: height / 2 - 12, width: 56, height: 24)
-        pen.toolTip = "Draw on the recording (or hold \(keyBindings.drawModifier.shortName) and drag)"
-        container.addSubview(pen)
-        penButton = pen
-
         let stop = NSButton(title: "Stop", target: self, action: #selector(stopTapped))
         stop.frame = NSRect(x: width - 70, y: height / 2 - 12, width: 60, height: 24)
         stop.bezelStyle = .rounded
+        stop.toolTip = "Zoom: hold \(keyBindings.zoomModifier.shortName) · Draw: hold \(keyBindings.drawModifier.shortName)"
         container.addSubview(stop)
 
         panel.orderFrontRegardless()
         self.panel = panel
     }
 
-    private func showToolPanel(beside rect: NSRect) {
+    private func showToolPanel(beside rect: NSRect, hudFrame: NSRect) {
         let width: CGFloat = 172
-        let height: CGFloat = 118
+        let height: CGFloat = 144
         let gap: CGFloat = 10
 
-        // Prefer the right side of the capture box, then the left, then inside.
+        // Prefer the right side of the capture box, then the left. When neither
+        // fits (the capture box spans the screen), dock the pen settings just
+        // below the HUD at the top — it's capture-excluded either way.
         var x = rect.maxX + gap
         if x + width > screen.frame.width - 4 {
             x = rect.minX - width - gap
         }
+        let origin: NSPoint
         if x < 4 {
-            x = min(rect.maxX - width - gap, screen.frame.width - width - 4)
+            var fx = hudFrame.midX - width / 2
+            fx = max(screen.frame.origin.x + 4,
+                     min(fx, screen.frame.origin.x + screen.frame.width - width - 4))
+            origin = NSPoint(x: fx, y: hudFrame.minY - height - 8)
+        } else {
+            var y = rect.maxY - height
+            y = max(4, min(y, screen.frame.height - height - 4))
+            origin = NSPoint(x: screen.frame.origin.x + x, y: screen.frame.origin.y + y)
         }
-        var y = rect.maxY - height
-        y = max(4, min(y, screen.frame.height - height - 4))
-        let origin = NSPoint(x: screen.frame.origin.x + x, y: screen.frame.origin.y + y)
 
         let panel = makePanel(frame: NSRect(origin: origin, size: NSSize(width: width, height: height)))
         let container = panel.contentView!
@@ -283,6 +276,16 @@ final class RecordingOverlayController: NSObject {
         fade.action = #selector(fadeChanged(_:))
         container.addSubview(fade)
 
+        let lock = NSButton(
+            checkboxWithTitle: "Keep pen on",
+            target: self,
+            action: #selector(penLockChanged(_:))
+        )
+        lock.frame = NSRect(x: 10, y: 8, width: width - 20, height: 18)
+        lock.font = .systemFont(ofSize: 11)
+        lock.toolTip = "Draw without holding \(keyBindings.drawModifier.shortName)"
+        container.addSubview(lock)
+
         panel.orderFrontRegardless()
         toolPanel = panel
     }
@@ -317,17 +320,15 @@ final class RecordingOverlayController: NSObject {
 
     private func pollModifiers() {
         let flags = NSEvent.modifierFlags
-        let zoom = zoomSticky || flags.contains(keyBindings.zoomModifier.eventFlag)
-        let pen = penSticky || flags.contains(keyBindings.drawModifier.eventFlag)
+        let zoom = flags.contains(keyBindings.zoomModifier.eventFlag)
+        let pen = penLock || flags.contains(keyBindings.drawModifier.eventFlag)
 
         if zoom != lastZoom {
             lastZoom = zoom
-            zoomButton?.state = zoom ? .on : .off
             onZoomChange?(zoom)
         }
         if pen != lastPen {
             lastPen = pen
-            penButton?.state = pen ? .on : .off
             drawWindow?.ignoresMouseEvents = !pen
             drawView?.penActive = pen
         }
@@ -358,13 +359,8 @@ final class RecordingOverlayController: NSObject {
         dimView.zoomViewport = NSRect(x: x, y: y, width: w, height: h)
     }
 
-    @objc private func zoomToggled() {
-        zoomSticky = zoomButton?.state == .on
-        pollModifiers()
-    }
-
-    @objc private func penToggled() {
-        penSticky = penButton?.state == .on
+    @objc private func penLockChanged(_ sender: NSButton) {
+        penLock = sender.state == .on
         pollModifiers()
     }
 
