@@ -81,6 +81,15 @@ enum RecordingModifier: String, CaseIterable {
         }
     }
 
+    var symbol: String {
+        switch self {
+        case .control: return "⌃"
+        case .option: return "⌥"
+        case .shift: return "⇧"
+        case .command: return "⌘"
+        }
+    }
+
     var eventFlag: NSEvent.ModifierFlags {
         switch self {
         case .control: return .control

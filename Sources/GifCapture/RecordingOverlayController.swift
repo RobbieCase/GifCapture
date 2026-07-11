@@ -90,7 +90,10 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func showClickIndicator(for event: NSEvent) {
-        guard keyBindings.clickIndicatorMode.matches(event.modifierFlags),
+        guard keyBindings.clickIndicatorMode.matches(
+            event.modifierFlags,
+            modifier: keyBindings.clickIndicatorModifier
+        ),
               let drawWindow, let drawView else { return }
         let location = NSEvent.mouseLocation
         guard drawWindow.frame.contains(location),

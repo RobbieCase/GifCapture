@@ -20,8 +20,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let stopShortcutButton = ShortcutRecorderButton()
     private let zoomModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let drawModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clickIndicatorModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
     private let permissionStatusLabel = NSTextField(labelWithString: "Checking…")
+    private let permissionSeparator = NSBox()
+    private let permissionSection = NSStackView()
 
     convenience init() {
         let window = NSWindow(
@@ -64,14 +67,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scalePopup.addItems(withTitles: OutputScale.allCases.map(\.displayName))
 
         countdownCheckbox.toolTip = "Wait three seconds after choosing the capture area"
-        clickIndicatorPopup.addItems(withTitles: ClickIndicatorMode.allCases.map(\.displayName))
+        reloadClickIndicatorModeItems()
         clickIndicatorColorWell.widthAnchor.constraint(equalToConstant: 44).isActive = true
         clickIndicatorColorWell.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         let ordinaryControls: [NSControl] = [
             encoderPopup, qualitySlider, fpsPopup, scalePopup,
             countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
-            zoomModifierPopup, drawModifierPopup,
+            zoomModifierPopup, drawModifierPopup, clickIndicatorModifierPopup,
         ]
         ordinaryControls.forEach {
             $0.target = self
@@ -83,6 +86,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let modifierTitles = RecordingModifier.allCases.map(\.displayName)
         zoomModifierPopup.addItems(withTitles: modifierTitles)
         drawModifierPopup.addItems(withTitles: modifierTitles)
+        clickIndicatorModifierPopup.addItems(withTitles: modifierTitles)
 
         [startShortcutButton, libraryShortcutButton, stopShortcutButton].forEach {
             $0.widthAnchor.constraint(equalToConstant: 150).isActive = true
@@ -106,7 +110,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [label("Click indicator:"), clickIndicatorPopup],
             [label("Indicator color:"), clickIndicatorColorWell],
         ])
-        configure(grid: captureGrid)
+        configureLeftAligned(grid: captureGrid)
+
+        clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        clickIndicatorModifierPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        clickIndicatorModifierPopup.toolTip = "Modifier used by the third activation choice"
 
         let shortcutGrid = NSGridView(views: [
             [label("Start recording:"), startShortcutButton],
@@ -114,8 +122,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [label("Stop recording:"), stopShortcutButton],
             [label("Hold to zoom:"), zoomModifierPopup],
             [label("Hold to draw:"), drawModifierPopup],
+            [label("Click indicator:"), clickIndicatorModifierPopup],
         ])
-        configure(grid: shortcutGrid)
+        configureLeftAligned(grid: shortcutGrid)
 
         permissionStatusLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let settingsButton = NSButton(title: "Open System Settings…", target: self, action: #selector(openScreenRecordingSettings))
@@ -124,18 +133,28 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionRow.orientation = .horizontal
         permissionRow.spacing = 14
 
+        permissionSeparator.boxType = .separator
+        permissionSeparator.widthAnchor.constraint(equalToConstant: 460).isActive = true
+        permissionSection.setViews([
+            sectionTitle("Screen Recording Permission"),
+            permissionRow,
+            hint("After granting access in System Settings, quit and reopen GifCapture once so macOS applies the permission."),
+        ], in: .top)
+        permissionSection.orientation = .vertical
+        permissionSection.alignment = .leading
+        permissionSection.spacing = 9
+
         let stack = NSStackView(views: [
             sectionTitle("Output"), outputGrid,
             hint("Higher quality, frame rate, and 2× size increase the GIF's file size."),
             separator(),
             sectionTitle("Capture"), captureGrid,
-            hint("The countdown and click indicator are off by default. A modifier-click mode highlights only deliberate clicks."),
+            hint("The countdown and click highlighting are off by default. Indicator color applies when click highlighting is enabled."),
             separator(),
             sectionTitle("Key Bindings"), shortcutGrid,
-            hint("Global shortcuts work from any app. Stop Recording is active only while a recording is in progress."),
-            separator(),
-            sectionTitle("Screen Recording Permission"), permissionRow,
-            hint("After granting access in System Settings, quit and reopen GifCapture once so macOS applies the permission."),
+            hint("Stop Recording is active only while recording. The click modifier is available when modifier-click highlighting is selected above."),
+            permissionSeparator,
+            permissionSection,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -211,6 +230,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         grid.column(at: 1).xPlacement = .leading
     }
 
+    private func configureLeftAligned(grid: NSGridView) {
+        configure(grid: grid)
+        grid.columnSpacing = 8
+        grid.column(at: 0).width = 112
+        grid.column(at: 1).width = 340
+    }
+
     private func label(_ text: String) -> NSTextField {
         NSTextField(labelWithString: text)
     }
@@ -245,6 +271,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scalePopup.selectItem(at: OutputScale.allCases.firstIndex(of: settings.scale) ?? 0)
         countdownCheckbox.state = settings.countdownEnabled ? .on : .off
         cursorCheckbox.state = settings.showCursor ? .on : .off
+        reloadClickIndicatorModeItems()
         clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
         clickIndicatorColorWell.color = settings.clickIndicatorColor.nsColor
         clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
@@ -253,18 +280,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stopShortcutButton.shortcut = settings.stopRecordingShortcut
         zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
         drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
+        clickIndicatorModifierPopup.selectItem(
+            at: RecordingModifier.allCases.firstIndex(of: settings.clickIndicatorModifier) ?? 1
+        )
+        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorMode == .modifierClick
     }
 
     @objc private func controlChanged(_ sender: Any?) {
         let newZoom = RecordingModifier.allCases[max(0, zoomModifierPopup.indexOfSelectedItem)]
         let newDraw = RecordingModifier.allCases[max(0, drawModifierPopup.indexOfSelectedItem)]
-        if newZoom == newDraw {
+        let newClickModifier = RecordingModifier.allCases[max(0, clickIndicatorModifierPopup.indexOfSelectedItem)]
+        if Set([newZoom, newDraw, newClickModifier]).count != 3 {
             NSSound.beep()
-            if sender as AnyObject? === zoomModifierPopup {
-                zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
-            } else {
-                drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
-            }
+            zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
+            drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
+            clickIndicatorModifierPopup.selectItem(
+                at: RecordingModifier.allCases.firstIndex(of: settings.clickIndicatorModifier) ?? 1
+            )
             return
         }
 
@@ -278,8 +310,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.clickIndicatorColor = IndicatorColor(clickIndicatorColorWell.color)
         settings.zoomModifier = newZoom
         settings.drawModifier = newDraw
+        settings.clickIndicatorModifier = newClickModifier
         qualityValueLabel.stringValue = String(settings.quality)
         clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
+        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorMode == .modifierClick
+        reloadClickIndicatorModeItems()
+        clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
         saveAndNotify()
     }
 
@@ -290,8 +326,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func updatePermissionStatus() {
         let granted = CGPreflightScreenCaptureAccess()
-        permissionStatusLabel.stringValue = granted ? "Granted" : "Not Granted"
-        permissionStatusLabel.textColor = granted ? .systemGreen : .systemRed
+        permissionStatusLabel.stringValue = "Not Granted"
+        permissionStatusLabel.textColor = .systemRed
+        let shouldHide = granted
+        guard permissionSection.isHidden != shouldHide else { return }
+        permissionSection.isHidden = shouldHide
+        permissionSeparator.isHidden = shouldHide
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if let size = window?.contentView?.fittingSize, size.width > 0, size.height > 0 {
+            window?.setContentSize(size)
+        }
+    }
+
+    private func reloadClickIndicatorModeItems() {
+        let selected = clickIndicatorPopup.indexOfSelectedItem
+        clickIndicatorPopup.removeAllItems()
+        clickIndicatorPopup.addItems(withTitles: ClickIndicatorMode.allCases.map {
+            $0.displayName(modifier: settings.clickIndicatorModifier)
+        })
+        if selected >= 0, selected < clickIndicatorPopup.numberOfItems {
+            clickIndicatorPopup.selectItem(at: selected)
+        }
     }
 
     private func cancelShortcutCapture() {

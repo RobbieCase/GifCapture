@@ -27,30 +27,21 @@ enum OutputScale: Int, CaseIterable {
 enum ClickIndicatorMode: String, CaseIterable {
     case off
     case everyClick
-    case commandClick
-    case optionClick
-    case controlClick
-    case shiftClick
+    case modifierClick
 
-    var displayName: String {
+    func displayName(modifier: RecordingModifier) -> String {
         switch self {
         case .off: return "Off"
-        case .everyClick: return "Every click"
-        case .commandClick: return "Command-click (⌘)"
-        case .optionClick: return "Option-click (⌥)"
-        case .controlClick: return "Control-click (⌃)"
-        case .shiftClick: return "Shift-click (⇧)"
+        case .everyClick: return "Every Click"
+        case .modifierClick: return "\(modifier.shortName)-click (\(modifier.symbol))"
         }
     }
 
-    func matches(_ flags: NSEvent.ModifierFlags) -> Bool {
+    func matches(_ flags: NSEvent.ModifierFlags, modifier: RecordingModifier) -> Bool {
         switch self {
         case .off: return false
         case .everyClick: return true
-        case .commandClick: return flags.contains(.command)
-        case .optionClick: return flags.contains(.option)
-        case .controlClick: return flags.contains(.control)
-        case .shiftClick: return flags.contains(.shift)
+        case .modifierClick: return flags.contains(modifier.eventFlag)
         }
     }
 }
@@ -91,6 +82,7 @@ struct AppSettings {
     var countdownEnabled: Bool
     var showCursor: Bool
     var clickIndicatorMode: ClickIndicatorMode
+    var clickIndicatorModifier: RecordingModifier
     var clickIndicatorColor: IndicatorColor
     var startRecordingShortcut: KeyboardShortcut
     var openLibraryShortcut: KeyboardShortcut
@@ -120,6 +112,27 @@ struct AppSettings {
             indicatorColor = .defaultRed
         }
 
+        let storedClickMode = d.string(forKey: "clickIndicatorMode") ?? ""
+        let clickMode: ClickIndicatorMode
+        let migratedClickModifier: RecordingModifier?
+        switch storedClickMode {
+        case "commandClick": clickMode = .modifierClick; migratedClickModifier = .command
+        case "optionClick": clickMode = .modifierClick; migratedClickModifier = .option
+        case "controlClick": clickMode = .modifierClick; migratedClickModifier = .control
+        case "shiftClick": clickMode = .modifierClick; migratedClickModifier = .shift
+        default:
+            clickMode = ClickIndicatorMode(rawValue: storedClickMode) ?? .off
+            migratedClickModifier = nil
+        }
+        var clickModifier = RecordingModifier(
+            rawValue: d.string(forKey: "clickIndicatorModifier") ?? ""
+        ) ?? migratedClickModifier ?? .option
+        if clickModifier == zoomModifier || clickModifier == drawModifier {
+            clickModifier = RecordingModifier.allCases.first {
+                $0 != zoomModifier && $0 != drawModifier
+            } ?? .option
+        }
+
         return AppSettings(
             encoder: GifEncoder(rawValue: d.string(forKey: "encoder") ?? "") ?? .gifski,
             quality: d.object(forKey: "quality") as? Int ?? 90,
@@ -127,7 +140,8 @@ struct AppSettings {
             scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard,
             countdownEnabled: d.bool(forKey: "countdownEnabled"),
             showCursor: d.object(forKey: "showCursor") as? Bool ?? true,
-            clickIndicatorMode: ClickIndicatorMode(rawValue: d.string(forKey: "clickIndicatorMode") ?? "") ?? .off,
+            clickIndicatorMode: clickMode,
+            clickIndicatorModifier: clickModifier,
             clickIndicatorColor: indicatorColor,
             startRecordingShortcut: KeyboardShortcut.load(
                 from: d, prefix: "startRecordingShortcut", fallback: .defaultStartRecording
@@ -152,6 +166,7 @@ struct AppSettings {
         d.set(countdownEnabled, forKey: "countdownEnabled")
         d.set(showCursor, forKey: "showCursor")
         d.set(clickIndicatorMode.rawValue, forKey: "clickIndicatorMode")
+        d.set(clickIndicatorModifier.rawValue, forKey: "clickIndicatorModifier")
         d.set(clickIndicatorColor.red, forKey: "clickIndicatorRed")
         d.set(clickIndicatorColor.green, forKey: "clickIndicatorGreen")
         d.set(clickIndicatorColor.blue, forKey: "clickIndicatorBlue")

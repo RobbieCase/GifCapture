@@ -84,8 +84,8 @@ Recording) — you may need to quit and relaunch the app after granting it.
 
 Encoder, quality, frame rate, output size, cursor visibility, and an optional
 three-second countdown are configurable via the menu bar icon → **Settings…**.
-You can also add a colored click indicator to every click, or require Command,
-Option, Control, or Shift so only intentional clicks are highlighted.
+You can also add a colored click indicator to every click, or use its configurable
+modifier binding so only intentional clicks are highlighted.
 
 ### Key bindings
 
@@ -96,9 +96,9 @@ The Stop shortcut is registered only while recording. During recording, the
 configurable hold modifiers activate cursor-following Zoom and click-drag drawing;
 they default to Control and Shift respectively.
 
-Settings shows whether Screen Recording access is currently granted and includes
-a button that opens the correct System Settings page. After granting access, quit
-and reopen GifCapture once so macOS applies the change.
+When Screen Recording access is missing, Settings shows a warning with a button
+that opens the correct System Settings page and brief relaunch guidance. The
+warning disappears automatically once access is granted.
 
 ## Library
 
