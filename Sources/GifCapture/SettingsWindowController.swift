@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var settings = AppSettings.load()
@@ -9,14 +10,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let fpsPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let scalePopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
+    private let countdownCheckbox = NSButton(checkboxWithTitle: "3 seconds", target: nil, action: nil)
+    private let cursorCheckbox = NSButton(checkboxWithTitle: "Show cursor in recording", target: nil, action: nil)
+    private let clickIndicatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let clickIndicatorColorWell = NSColorWell()
+
     private let startShortcutButton = ShortcutRecorderButton()
     private let libraryShortcutButton = ShortcutRecorderButton()
+    private let stopShortcutButton = ShortcutRecorderButton()
     private let zoomModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let drawModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
+    private let permissionStatusLabel = NSTextField(labelWithString: "Checking…")
+
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 680),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -30,75 +39,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func show() {
         settings = AppSettings.load()
-        startShortcutButton.cancelCapture()
-        libraryShortcutButton.cancelCapture()
+        cancelShortcutCapture()
         syncControls()
+        updatePermissionStatus()
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        updatePermissionStatus()
+    }
+
     func windowWillClose(_ notification: Notification) {
-        startShortcutButton.cancelCapture()
-        libraryShortcutButton.cancelCapture()
+        cancelShortcutCapture()
     }
 
     private func buildUI() {
         encoderPopup.addItems(withTitles: GifEncoder.allCases.map(\.displayName))
-        encoderPopup.target = self
-        encoderPopup.action = #selector(controlChanged(_:))
-
         qualitySlider.numberOfTickMarks = 0
         qualitySlider.isContinuous = true
-        qualitySlider.target = self
-        qualitySlider.action = #selector(controlChanged(_:))
         qualityValueLabel.alignment = .right
-
         fpsPopup.addItems(withTitles: AppSettings.fpsChoices.map { "\($0) fps" })
-        fpsPopup.target = self
-        fpsPopup.action = #selector(controlChanged(_:))
-
         scalePopup.addItems(withTitles: OutputScale.allCases.map(\.displayName))
-        scalePopup.target = self
-        scalePopup.action = #selector(controlChanged(_:))
 
-        startShortcutButton.onBeginCapture = { [weak self] in
-            self?.libraryShortcutButton.cancelCapture()
+        countdownCheckbox.toolTip = "Wait three seconds after choosing the capture area"
+        clickIndicatorPopup.addItems(withTitles: ClickIndicatorMode.allCases.map(\.displayName))
+        clickIndicatorColorWell.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        clickIndicatorColorWell.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+        let ordinaryControls: [NSControl] = [
+            encoderPopup, qualitySlider, fpsPopup, scalePopup,
+            countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
+            zoomModifierPopup, drawModifierPopup,
+        ]
+        ordinaryControls.forEach {
+            $0.target = self
+            $0.action = #selector(controlChanged(_:))
         }
-        libraryShortcutButton.onBeginCapture = { [weak self] in
-            self?.startShortcutButton.cancelCapture()
-        }
-        startShortcutButton.onChange = { [weak self] shortcut in
-            guard let self else { return }
-            guard shortcut != self.settings.openLibraryShortcut else {
-                self.showDuplicateShortcut()
-                self.startShortcutButton.shortcut = self.settings.startRecordingShortcut
-                return
-            }
-            self.settings.startRecordingShortcut = shortcut
-            self.saveAndNotify()
-        }
-        libraryShortcutButton.onChange = { [weak self] shortcut in
-            guard let self else { return }
-            guard shortcut != self.settings.startRecordingShortcut else {
-                self.showDuplicateShortcut()
-                self.libraryShortcutButton.shortcut = self.settings.openLibraryShortcut
-                return
-            }
-            self.settings.openLibraryShortcut = shortcut
-            self.saveAndNotify()
-        }
+
+        configureShortcutButtons()
 
         let modifierTitles = RecordingModifier.allCases.map(\.displayName)
         zoomModifierPopup.addItems(withTitles: modifierTitles)
-        zoomModifierPopup.target = self
-        zoomModifierPopup.action = #selector(controlChanged(_:))
         drawModifierPopup.addItems(withTitles: modifierTitles)
-        drawModifierPopup.target = self
-        drawModifierPopup.action = #selector(controlChanged(_:))
 
-        startShortcutButton.widthAnchor.constraint(equalToConstant: 150).isActive = true
-        libraryShortcutButton.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        [startShortcutButton, libraryShortcutButton, stopShortcutButton].forEach {
+            $0.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        }
 
         let qualityRow = NSStackView(views: [qualitySlider, qualityValueLabel])
         qualityRow.orientation = .horizontal
@@ -112,30 +100,47 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
         configure(grid: outputGrid)
 
+        let captureGrid = NSGridView(views: [
+            [label("Countdown:"), countdownCheckbox],
+            [label("Cursor:"), cursorCheckbox],
+            [label("Click indicator:"), clickIndicatorPopup],
+            [label("Indicator color:"), clickIndicatorColorWell],
+        ])
+        configure(grid: captureGrid)
+
         let shortcutGrid = NSGridView(views: [
             [label("Start recording:"), startShortcutButton],
             [label("Open Library:"), libraryShortcutButton],
+            [label("Stop recording:"), stopShortcutButton],
             [label("Hold to zoom:"), zoomModifierPopup],
             [label("Hold to draw:"), drawModifierPopup],
         ])
         configure(grid: shortcutGrid)
 
-        let outputHint = hint(
-            "Changes apply to the next recording. Higher quality, frame rate, and 2× size increase the GIF's file size."
-        )
-        let shortcutHint = hint(
-            "Global shortcuts work from any app. During recording, hold the selected modifier to zoom or hold it while dragging to draw."
-        )
+        permissionStatusLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        let settingsButton = NSButton(title: "Open System Settings…", target: self, action: #selector(openScreenRecordingSettings))
+        settingsButton.bezelStyle = .rounded
+        let permissionRow = NSStackView(views: [permissionStatusLabel, settingsButton])
+        permissionRow.orientation = .horizontal
+        permissionRow.spacing = 14
 
         let stack = NSStackView(views: [
-            sectionTitle("Output"), outputGrid, outputHint,
+            sectionTitle("Output"), outputGrid,
+            hint("Higher quality, frame rate, and 2× size increase the GIF's file size."),
             separator(),
-            sectionTitle("Key Bindings"), shortcutGrid, shortcutHint,
+            sectionTitle("Capture"), captureGrid,
+            hint("The countdown and click indicator are off by default. A modifier-click mode highlights only deliberate clicks."),
+            separator(),
+            sectionTitle("Key Bindings"), shortcutGrid,
+            hint("Global shortcuts work from any app. Stop Recording is active only while a recording is in progress."),
+            separator(),
+            sectionTitle("Screen Recording Permission"), permissionRow,
+            hint("After granting access in System Settings, quit and reopen GifCapture once so macOS applies the permission."),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 18, right: 20)
+        stack.spacing = 9
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -145,7 +150,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            outputGrid.widthAnchor.constraint(equalToConstant: 440),
+            outputGrid.widthAnchor.constraint(equalToConstant: 460),
+            captureGrid.widthAnchor.constraint(equalTo: outputGrid.widthAnchor),
             shortcutGrid.widthAnchor.constraint(equalTo: outputGrid.widthAnchor),
         ])
         window?.contentView = content
@@ -153,8 +159,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         syncControls()
     }
 
+    private func configureShortcutButtons() {
+        startShortcutButton.onBeginCapture = { [weak self] in
+            self?.libraryShortcutButton.cancelCapture()
+            self?.stopShortcutButton.cancelCapture()
+        }
+        libraryShortcutButton.onBeginCapture = { [weak self] in
+            self?.startShortcutButton.cancelCapture()
+            self?.stopShortcutButton.cancelCapture()
+        }
+        stopShortcutButton.onBeginCapture = { [weak self] in
+            self?.startShortcutButton.cancelCapture()
+            self?.libraryShortcutButton.cancelCapture()
+        }
+
+        startShortcutButton.onChange = { [weak self] shortcut in
+            guard let self else { return }
+            guard shortcut != settings.openLibraryShortcut, shortcut != settings.stopRecordingShortcut else {
+                showDuplicateShortcut()
+                startShortcutButton.shortcut = settings.startRecordingShortcut
+                return
+            }
+            settings.startRecordingShortcut = shortcut
+            saveAndNotify()
+        }
+        libraryShortcutButton.onChange = { [weak self] shortcut in
+            guard let self else { return }
+            guard shortcut != settings.startRecordingShortcut, shortcut != settings.stopRecordingShortcut else {
+                showDuplicateShortcut()
+                libraryShortcutButton.shortcut = settings.openLibraryShortcut
+                return
+            }
+            settings.openLibraryShortcut = shortcut
+            saveAndNotify()
+        }
+        stopShortcutButton.onChange = { [weak self] shortcut in
+            guard let self else { return }
+            guard shortcut != settings.startRecordingShortcut, shortcut != settings.openLibraryShortcut else {
+                showDuplicateShortcut()
+                stopShortcutButton.shortcut = settings.stopRecordingShortcut
+                return
+            }
+            settings.stopRecordingShortcut = shortcut
+            saveAndNotify()
+        }
+    }
+
     private func configure(grid: NSGridView) {
-        grid.rowSpacing = 10
+        grid.rowSpacing = 8
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .leading
     }
@@ -174,14 +226,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         field.font = .systemFont(ofSize: 11)
         field.textColor = .secondaryLabelColor
         field.maximumNumberOfLines = 2
-        field.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        field.widthAnchor.constraint(equalToConstant: 460).isActive = true
         return field
     }
 
     private func separator() -> NSBox {
         let box = NSBox()
         box.boxType = .separator
-        box.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        box.widthAnchor.constraint(equalToConstant: 460).isActive = true
         return box
     }
 
@@ -191,8 +243,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         qualityValueLabel.stringValue = String(settings.quality)
         fpsPopup.selectItem(at: AppSettings.fpsChoices.firstIndex(of: settings.fps) ?? 2)
         scalePopup.selectItem(at: OutputScale.allCases.firstIndex(of: settings.scale) ?? 0)
+        countdownCheckbox.state = settings.countdownEnabled ? .on : .off
+        cursorCheckbox.state = settings.showCursor ? .on : .off
+        clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
+        clickIndicatorColorWell.color = settings.clickIndicatorColor.nsColor
+        clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
         startShortcutButton.shortcut = settings.startRecordingShortcut
         libraryShortcutButton.shortcut = settings.openLibraryShortcut
+        stopShortcutButton.shortcut = settings.stopRecordingShortcut
         zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
         drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
     }
@@ -214,10 +272,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.quality = qualitySlider.integerValue
         settings.fps = AppSettings.fpsChoices[max(0, fpsPopup.indexOfSelectedItem)]
         settings.scale = OutputScale.allCases[max(0, scalePopup.indexOfSelectedItem)]
+        settings.countdownEnabled = countdownCheckbox.state == .on
+        settings.showCursor = cursorCheckbox.state == .on
+        settings.clickIndicatorMode = ClickIndicatorMode.allCases[max(0, clickIndicatorPopup.indexOfSelectedItem)]
+        settings.clickIndicatorColor = IndicatorColor(clickIndicatorColorWell.color)
         settings.zoomModifier = newZoom
         settings.drawModifier = newDraw
         qualityValueLabel.stringValue = String(settings.quality)
+        clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
         saveAndNotify()
+    }
+
+    @objc private func openScreenRecordingSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func updatePermissionStatus() {
+        let granted = CGPreflightScreenCaptureAccess()
+        permissionStatusLabel.stringValue = granted ? "Granted" : "Not Granted"
+        permissionStatusLabel.textColor = granted ? .systemGreen : .systemRed
+    }
+
+    private func cancelShortcutCapture() {
+        startShortcutButton.cancelCapture()
+        libraryShortcutButton.cancelCapture()
+        stopShortcutButton.cancelCapture()
     }
 
     private func saveAndNotify() {
@@ -229,7 +309,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         NSSound.beep()
         let alert = NSAlert()
         alert.messageText = "Shortcut already in use"
-        alert.informativeText = "Choose a different shortcut for Start Recording and Open Library."
+        alert.informativeText = "Choose a different shortcut for Start Recording, Open Library, and Stop Recording."
         alert.alertStyle = .warning
         alert.runModal()
     }

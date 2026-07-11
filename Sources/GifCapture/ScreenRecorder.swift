@@ -21,7 +21,12 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     private var sessionStarted = false
     private var outputURL: URL!
 
-    func start(rect: CGRect, display: SCDisplay, excludingWindowIDs: [CGWindowID] = []) async throws {
+    func start(
+        rect: CGRect,
+        display: SCDisplay,
+        excludingWindowIDs: [CGWindowID] = [],
+        showsCursor: Bool = true
+    ) async throws {
         let scale = matchingScreen(for: display)?.backingScaleFactor ?? 2
         let pixelWidth = max(2, Int((rect.width * scale).rounded()))
         let pixelHeight = max(2, Int((rect.height * scale).rounded()))
@@ -41,7 +46,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         config.height = pixelHeight
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        config.showsCursor = true
+        config.showsCursor = showsCursor
         config.capturesAudio = false
 
         outputURL = FileManager.default.temporaryDirectory

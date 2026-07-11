@@ -5,6 +5,7 @@ import ScreenCaptureKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var selectionController: SelectionOverlayController?
+    private var countdownController: CountdownOverlayController?
     private var recorder: ScreenRecorder?
     private var recordingOverlay: RecordingOverlayController?
     private var settingsController: SettingsWindowController?
@@ -45,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         versionItem.isEnabled = false
         menu.addItem(versionItem)
         menu.addItem(.separator())
-        if recorder?.isRecording == true {
+        if countdownController != nil {
+            menu.addItem(withTitle: "Cancel Countdown", action: #selector(cancelCountdown), keyEquivalent: "")
+        } else if recordingOverlay != nil {
             menu.addItem(withTitle: "Stop Recording", action: #selector(stopRecording), keyEquivalent: "")
         } else {
             menu.addItem(withTitle: "Record New GIF…", action: #selector(startSelection), keyEquivalent: "")
@@ -63,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startSelection() {
-        guard recorder == nil, selectionController == nil else { return }
+        guard recorder == nil, selectionController == nil, countdownController == nil else { return }
         selectionController = SelectionOverlayController { [weak self] result in
             self?.selectionController = nil
             guard let self, let result else { return }
@@ -73,6 +76,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginRecording(result: SelectionResult) {
+        let settings = AppSettings.load()
+        guard settings.countdownEnabled else {
+            beginRecordingNow(result: result, settings: settings)
+            return
+        }
+
+        let countdown = CountdownOverlayController(
+            screen: result.screen,
+            topLeftRect: result.rect
+        ) { [weak self] completed in
+            guard let self else { return }
+            self.countdownController = nil
+            self.rebuildMenu()
+            guard completed else { return }
+            self.beginRecordingNow(result: result, settings: AppSettings.load())
+        }
+        countdownController = countdown
+        rebuildMenu()
+        countdown.show()
+    }
+
+    private func beginRecordingNow(result: SelectionResult, settings: AppSettings) {
         let recorder = ScreenRecorder()
         self.recorder = recorder
         lastSelectionPointWidth = Int(result.rect.width)
@@ -86,13 +111,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.show()
         recordingOverlay = overlay
         rebuildMenu()
+        configureGlobalShortcuts(showErrors: false)
 
         Task {
             do {
                 try await recorder.start(
                     rect: result.rect,
                     display: result.display,
-                    excludingWindowIDs: overlay.captureExcludedWindowIDs
+                    excludingWindowIDs: overlay.captureExcludedWindowIDs,
+                    showsCursor: settings.showCursor
                 )
             } catch {
                 await MainActor.run {
@@ -101,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.recordingOverlay = nil
                     self.recorder = nil
                     self.rebuildMenu()
+                    self.configureGlobalShortcuts(showErrors: false)
                 }
             }
         }
@@ -111,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingOverlay?.close()
         recordingOverlay = nil
         rebuildMenu()
+        configureGlobalShortcuts(showErrors: false)
 
         Task {
             do {
@@ -128,6 +157,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    @objc private func cancelCountdown() {
+        countdownController?.cancel()
     }
 
     private func presentTrimWindow(videoURL: URL) {
@@ -195,6 +228,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openLibrary()
         }) {
             unavailable.append("Open Library (\(settings.openLibraryShortcut.displayName))")
+        }
+        if recordingOverlay != nil,
+           !hotKeyManager.register(id: 3, shortcut: settings.stopRecordingShortcut, action: { [weak self] in
+               self?.stopRecording()
+           }) {
+            unavailable.append("Stop Recording (\(settings.stopRecordingShortcut.displayName))")
         }
         guard showErrors, !unavailable.isEmpty else { return }
 

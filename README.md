@@ -82,16 +82,23 @@ Recording) — you may need to quit and relaunch the app after granting it.
 5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
 6. The Library opens with the finished GIF at the top of the grid.
 
-Encoder, quality, frame rate, and output size are configurable via the menu bar
-icon → **Settings…**.
+Encoder, quality, frame rate, output size, cursor visibility, and an optional
+three-second countdown are configurable via the menu bar icon → **Settings…**.
+You can also add a colored click indicator to every click, or require Command,
+Option, Control, or Shift so only intentional clicks are highlighted.
 
 ### Key bindings
 
-Settings also provides global shortcuts for **Start Recording** and **Open Library**.
-Click either shortcut button, then type a new key combination. The defaults are
-Control–Command–G and Control–Command–L. During recording, the configurable hold
-modifiers activate cursor-following Zoom and click-drag drawing; they default to
-Control and Shift respectively.
+Settings also provides global shortcuts for **Start Recording**, **Open Library**,
+and **Stop Recording**. Click a shortcut button, then type a new key combination.
+The defaults are Control–Command–G, Control–Command–L, and Control–Command–S.
+The Stop shortcut is registered only while recording. During recording, the
+configurable hold modifiers activate cursor-following Zoom and click-drag drawing;
+they default to Control and Shift respectively.
+
+Settings shows whether Screen Recording access is currently granted and includes
+a button that opens the correct System Settings page. After granting access, quit
+and reopen GifCapture once so macOS applies the change.
 
 ## Library
 

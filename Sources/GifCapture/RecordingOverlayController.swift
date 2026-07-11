@@ -12,6 +12,8 @@ final class RecordingOverlayController: NSObject {
     private var toolPanel: NSPanel?
     private var drawWindow: NSWindow?
     private var drawView: PenDrawingView?
+    private var globalClickMonitor: Any?
+    private var localClickMonitor: Any?
 
     private var timer: Timer?
     private var modifierTimer: Timer?
@@ -60,6 +62,7 @@ final class RecordingOverlayController: NSObject {
         showDrawWindow(over: localRect)
         showControlPanel(above: localRect)
         showToolPanel(beside: localRect)
+        installClickIndicatorMonitors()
 
         startTime = Date()
         timer = scheduled(1) { [weak self] in self?.tick() }
@@ -72,6 +75,30 @@ final class RecordingOverlayController: NSObject {
         let t = Timer(timeInterval: interval, repeats: true) { _ in block() }
         RunLoop.main.add(t, forMode: .common)
         return t
+    }
+
+    private func installClickIndicatorMonitors() {
+        guard keyBindings.clickIndicatorMode != .off else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.showClickIndicator(for: event)
+        }
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.showClickIndicator(for: event)
+            return event
+        }
+    }
+
+    private func showClickIndicator(for event: NSEvent) {
+        guard keyBindings.clickIndicatorMode.matches(event.modifierFlags),
+              let drawWindow, let drawView else { return }
+        let location = NSEvent.mouseLocation
+        guard drawWindow.frame.contains(location),
+              panel?.frame.contains(location) != true,
+              toolPanel?.frame.contains(location) != true else { return }
+        let windowPoint = drawWindow.convertPoint(fromScreen: location)
+        let viewPoint = drawView.convert(windowPoint, from: nil)
+        drawView.showClickIndicator(at: viewPoint, color: keyBindings.clickIndicatorColor.nsColor)
     }
 
     // MARK: - Windows
@@ -373,6 +400,10 @@ final class RecordingOverlayController: NSObject {
         timer = nil
         modifierTimer = nil
         indicatorTimer = nil
+        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        globalClickMonitor = nil
+        localClickMonitor = nil
         [panel, toolPanel, drawWindow, dimWindow].forEach { $0?.orderOut(nil) }
         panel = nil
         toolPanel = nil
@@ -440,7 +471,14 @@ final class PenDrawingView: NSView {
         var finishedAt: Date?
     }
 
+    private struct ClickPulse {
+        let point: NSPoint
+        let color: NSColor
+        let startedAt: Date
+    }
+
     private var strokes: [Stroke] = []
+    private var clickPulses: [ClickPulse] = []
     private var anchor: NSPoint = .zero
     private var fadeTimer: Timer?
     private let fadeSeconds = 1.0
@@ -450,6 +488,12 @@ final class PenDrawingView: NSView {
         let path = newPath()
         if tool == .free { path.move(to: anchor) }
         strokes.append(Stroke(path: path, color: strokeColor, fadeAfter: fadeAfter, finishedAt: nil))
+        ensureFadeTimer()
+        needsDisplay = true
+    }
+
+    func showClickIndicator(at point: NSPoint, color: NSColor) {
+        clickPulses.append(ClickPulse(point: point, color: color, startedAt: Date()))
         ensureFadeTimer()
         needsDisplay = true
     }
@@ -519,6 +563,21 @@ final class PenDrawingView: NSView {
             stroke.color.withAlphaComponent(alpha).setStroke()
             stroke.path.stroke()
         }
+        for pulse in clickPulses {
+            let progress = min(1, max(0, now.timeIntervalSince(pulse.startedAt) / 0.6))
+            let radius = 7 + CGFloat(progress) * 17
+            let alpha = CGFloat(1 - progress)
+            guard alpha > 0 else { continue }
+            pulse.color.withAlphaComponent(alpha).setStroke()
+            let ring = NSBezierPath(ovalIn: NSRect(
+                x: pulse.point.x - radius,
+                y: pulse.point.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            ))
+            ring.lineWidth = 4
+            ring.stroke()
+        }
     }
 
     private func ensureFadeTimer() {
@@ -530,7 +589,8 @@ final class PenDrawingView: NSView {
                 guard let finished = stroke.finishedAt, stroke.fadeAfter.isFinite else { return false }
                 return now.timeIntervalSince(finished) > stroke.fadeAfter + self.fadeSeconds
             }
-            if self.strokes.isEmpty {
+            self.clickPulses.removeAll { now.timeIntervalSince($0.startedAt) > 0.6 }
+            if self.strokes.isEmpty && self.clickPulses.isEmpty {
                 self.fadeTimer?.invalidate()
                 self.fadeTimer = nil
             }

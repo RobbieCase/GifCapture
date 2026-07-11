@@ -34,6 +34,9 @@ struct KeyboardShortcut: Equatable {
     static let defaultOpenLibrary = KeyboardShortcut(
         keyCode: UInt32(kVK_ANSI_L), modifiers: [.control, .command], keyName: "L"
     )
+    static let defaultStopRecording = KeyboardShortcut(
+        keyCode: UInt32(kVK_ANSI_S), modifiers: [.control, .command], keyName: "S"
+    )
 
     static func load(from defaults: UserDefaults, prefix: String, fallback: KeyboardShortcut) -> KeyboardShortcut {
         guard defaults.object(forKey: "\(prefix).keyCode") != nil,
