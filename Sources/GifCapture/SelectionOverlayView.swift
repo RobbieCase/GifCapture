@@ -243,7 +243,10 @@ final class SelectionOverlayView: NSView {
         let totalWidth = recordButton.frame.width + spacing + cancelButton.frame.width
         let buttonHeight = recordButton.frame.height
         var y = rect.minY - buttonHeight - 10
-        if y < 4 { y = min(rect.maxY + 10, bounds.maxY - buttonHeight - 4) }
+        if y < 4 {
+            // No room below the selection: center the buttons on screen.
+            y = bounds.midY - buttonHeight / 2
+        }
         var x = rect.midX - totalWidth / 2
         x = max(4, min(x, bounds.maxX - totalWidth - 4))
 

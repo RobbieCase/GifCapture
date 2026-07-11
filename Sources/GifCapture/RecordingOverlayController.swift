@@ -195,6 +195,14 @@ final class RecordingOverlayController: NSObject {
         timeLabel = label
 
         if toolPanelDocked {
+            // A HUD covering part of a full-screen recording should be movable;
+            // the collapsed palette follows it (see hudMoved).
+            panel.isMovableByWindowBackground = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(hudMoved),
+                name: NSWindow.didMoveNotification, object: panel
+            )
+
             let pen = NSButton(title: "Pen", target: self, action: #selector(penOptionsToggled))
             pen.setButtonType(.pushOnPushOff)
             pen.bezelStyle = .rounded
@@ -320,8 +328,17 @@ final class RecordingOverlayController: NSObject {
     @objc private func penOptionsToggled() {
         guard let toolPanel else { return }
         let show = penOptionsButton?.state == .on
+        if show { hudMoved() } // reattach below the HUD's current position
         toolPanel.alphaValue = show ? 1 : 0.01
         toolPanel.ignoresMouseEvents = !show
+    }
+
+    @objc private func hudMoved() {
+        guard toolPanelDocked, let panel, let toolPanel else { return }
+        var x = panel.frame.midX - toolPanel.frame.width / 2
+        x = max(screen.frame.origin.x + 4,
+                min(x, screen.frame.origin.x + screen.frame.width - toolPanel.frame.width - 4))
+        toolPanel.setFrameOrigin(NSPoint(x: x, y: panel.frame.minY - toolPanel.frame.height - 8))
     }
 
     private func makePanel(frame: NSRect) -> NSPanel {
@@ -429,6 +446,7 @@ final class RecordingOverlayController: NSObject {
     }
 
     func close() {
+        NotificationCenter.default.removeObserver(self)
         [timer, modifierTimer, indicatorTimer].forEach { $0?.invalidate() }
         timer = nil
         modifierTimer = nil
