@@ -12,13 +12,16 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.6.0"
-BUILD_NUMBER="600"
+VERSION="0.6.1"
+BUILD_NUMBER="601"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 MODULE_CACHE_DIR=".build/module-cache"
 
+# A stale module cache miscompiles against framework internals (v0.6.0 shipped
+# a binary that bus-errored inside SwiftUI-backed controls); always start fresh.
+rm -rf "$MODULE_CACHE_DIR"
 mkdir -p "$BUILD_DIR" "$MODULE_CACHE_DIR"
 
 echo "Compiling..."

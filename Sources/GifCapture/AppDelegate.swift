@@ -4,7 +4,6 @@ import ScreenCaptureKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let recentCapturesMenu = NSMenu()
     private var statusItem: NSStatusItem!
     private var selectionController: SelectionOverlayController?
     private var countdownController: CountdownOverlayController?
@@ -25,7 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "GifCapture")
         }
         rebuildMenu()
-        recentCapturesMenu.delegate = self
         UNUserNotificationCenter.current().delegate = self
         configureGlobalShortcuts(showErrors: false)
         NotificationCenter.default.addObserver(
@@ -41,6 +39,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: .shortcutCaptureEnded, object: nil
         )
         UpdateChecker.checkOnLaunch()
+        handleQAHook()
+    }
+
+    /// Local QA: GIFCAPTURE_QA=library|record|settings drives the app into the
+    /// named flow after launch and exits, so smoke tests can run headless.
+    private func handleQAHook() {
+        guard let mode = ProcessInfo.processInfo.environment["GIFCAPTURE_QA"] else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            switch mode {
+            case "library": self?.openLibrary()
+            case "record": self?.startSelection()
+            case "settings": self?.openSettings()
+            default: break
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let visible = NSApp.windows.filter(\.isVisible).count
+                print("QA OK mode=\(mode) visibleWindows=\(visible)")
+                exit(0)
+            }
+        }
     }
 
     private func rebuildMenu() {
@@ -61,9 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let libraryItem = NSMenuItem(title: "Library…", action: #selector(openLibrary), keyEquivalent: "")
         libraryItem.image = libraryMenuImage()
         menu.addItem(libraryItem)
-        let recentItem = NSMenuItem(title: "Recent Captures", action: nil, keyEquivalent: "")
-        recentItem.submenu = recentCapturesMenu
-        menu.addItem(recentItem)
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
@@ -273,69 +288,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    // MARK: - Recent captures
-
-    @objc private func recentCaptureCopy(_ sender: NSMenuItem) {
-        guard let url = sender.representedObject as? URL else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([url as NSURL])
-    }
-
-    @objc private func recentCaptureReveal(_ sender: NSMenuItem) {
-        guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    private func recentCaptures(limit: Int) -> [URL] {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: GifConverter.outputDirectory,
-            includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
-        var gifs: [(URL, Date)] = []
-        for case let url as URL in enumerator where url.pathExtension.lowercased() == "gif" {
-            let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            gifs.append((url, date))
-        }
-        return gifs.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
-    }
-
     private func showError(_ title: String, _ error: Error) {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
         alert.runModal()
-    }
-}
-
-// MARK: - Recent Captures submenu population
-
-extension AppDelegate: NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === recentCapturesMenu else { return }
-        menu.removeAllItems()
-        let recents = recentCaptures(limit: 5)
-        guard !recents.isEmpty else {
-            let empty = menu.addItem(withTitle: "No captures yet", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            return
-        }
-        for url in recents {
-            let item = menu.addItem(withTitle: url.lastPathComponent, action: #selector(recentCaptureCopy(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = url
-            item.toolTip = "Copy to clipboard — hold Option to reveal in Finder"
-
-            let alternate = NSMenuItem(title: "Reveal \"\(url.lastPathComponent)\"", action: #selector(recentCaptureReveal(_:)), keyEquivalent: "")
-            alternate.target = self
-            alternate.representedObject = url
-            alternate.isAlternate = true
-            alternate.keyEquivalentModifierMask = .option
-            menu.addItem(alternate)
-        }
     }
 }
 
