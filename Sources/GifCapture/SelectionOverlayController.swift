@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import ScreenCaptureKit
 
 struct SelectionResult {
@@ -7,6 +8,99 @@ struct SelectionResult {
     let rect: CGRect
     let display: SCDisplay
     let screen: NSScreen
+    let captureMode: CaptureMode
+    let windowID: CGWindowID?
+}
+
+struct WindowSelectionCandidate {
+    let windowID: CGWindowID
+    let rect: NSRect
+    let label: String
+}
+
+/// Shared window geometry helpers. Core Graphics window bounds omit the drop
+/// shadow; the small inset also removes the outer framing pixels.
+enum WindowCaptureGeometry {
+    static func captureBounds(for windowID: CGWindowID) -> CGRect? {
+        guard let info = windowInfo(options: [.optionIncludingWindow], relativeTo: windowID).first,
+              let frame = frame(from: info) else { return nil }
+        let cropped = frame.insetBy(dx: 1, dy: 1)
+        return cropped.width > 10 && cropped.height > 10 ? cropped : nil
+    }
+
+    static func selectionCandidates(for screen: NSScreen) -> [WindowSelectionCandidate] {
+        guard let displayID = displayID(of: screen) else { return [] }
+        let displayBounds = CGDisplayBounds(displayID)
+        let ownPID = getpid()
+
+        return windowInfo(options: [.optionOnScreenOnly, .excludeDesktopElements])
+            .compactMap { info in
+                guard (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                      (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value != ownPID,
+                      (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0.01,
+                      let windowNumber = info[kCGWindowNumber as String] as? NSNumber,
+                      let rawFrame = frame(from: info),
+                      rawFrame.width > 80, rawFrame.height > 40 else { return nil }
+
+                let captureFrame = rawFrame.insetBy(dx: 1, dy: 1)
+                let clipped = captureFrame.intersection(displayBounds)
+                guard !clipped.isNull, clipped.width > 10, clipped.height > 10 else { return nil }
+
+                let localRect = NSRect(
+                    x: clipped.minX - displayBounds.minX,
+                    y: screen.frame.height - (clipped.minY - displayBounds.minY) - clipped.height,
+                    width: clipped.width,
+                    height: clipped.height
+                )
+                let owner = info[kCGWindowOwnerName as String] as? String ?? "Window"
+                let title = info[kCGWindowName as String] as? String
+                let label = title.flatMap { $0.isEmpty ? nil : "\(owner) — \($0)" } ?? owner
+                return WindowSelectionCandidate(
+                    windowID: CGWindowID(windowNumber.uint32Value),
+                    rect: localRect,
+                    label: label
+                )
+            }
+    }
+
+    static func displayRelativeRect(
+        for windowID: CGWindowID,
+        displayID: CGDirectDisplayID,
+        fixedSize: CGSize? = nil
+    ) -> CGRect? {
+        guard let bounds = captureBounds(for: windowID) else { return nil }
+        let displayBounds = CGDisplayBounds(displayID)
+        let size = fixedSize ?? bounds.size
+        var rect = CGRect(
+            x: bounds.minX - displayBounds.minX,
+            y: bounds.minY - displayBounds.minY,
+            width: size.width,
+            height: size.height
+        )
+        guard rect.intersects(CGRect(origin: .zero, size: displayBounds.size)) else { return nil }
+        rect.origin.x = max(0, min(rect.origin.x, displayBounds.width - rect.width))
+        rect.origin.y = max(0, min(rect.origin.y, displayBounds.height - rect.height))
+        return rect
+    }
+
+    private static func windowInfo(
+        options: CGWindowListOption,
+        relativeTo windowID: CGWindowID = kCGNullWindowID
+    ) -> [[String: Any]] {
+        CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]] ?? []
+    }
+
+    private static func frame(from info: [String: Any]) -> CGRect? {
+        guard let dictionary = info[kCGWindowBounds as String] as? [String: Any] else { return nil }
+        return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
+    }
+
+    static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return CGDirectDisplayID(number.uint32Value)
+    }
 }
 
 /// Borderless windows refuse key status by default; we need it for Return/Esc handling.
@@ -16,14 +110,13 @@ private final class OverlayWindow: NSWindow {
 
 final class SelectionOverlayController {
     private var windows: [NSWindow] = []
+    private let captureMode: CaptureMode
     private let completion: (SelectionResult?) -> Void
     private var monitor: Any?
     private var finished = false
 
-    private static let savedRectKey = "lastSelection.rect"
-    private static let savedScreenKey = "lastSelection.displayID"
-
-    init(completion: @escaping (SelectionResult?) -> Void) {
+    init(captureMode: CaptureMode, completion: @escaping (SelectionResult?) -> Void) {
+        self.captureMode = captureMode
         self.completion = completion
     }
 
@@ -42,12 +135,17 @@ final class SelectionOverlayController {
             window.isOpaque = false
             window.backgroundColor = .clear
             window.ignoresMouseEvents = false
+            window.acceptsMouseMovedEvents = true
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
             let view = SelectionOverlayView(frame: NSRect(origin: .zero, size: screen.frame.size))
             view.screen = screen
-            view.onConfirm = { [weak self] viewRect in
-                self?.finish(viewRect: viewRect, screen: screen)
+            view.captureMode = captureMode
+            if captureMode == .window {
+                view.windowCandidates = WindowCaptureGeometry.selectionCandidates(for: screen)
+            }
+            view.onConfirm = { [weak self] viewRect, windowID in
+                self?.finish(viewRect: viewRect, screen: screen, windowID: windowID)
             }
             view.onCancel = { [weak self] in
                 self?.cancel()
@@ -57,13 +155,13 @@ final class SelectionOverlayController {
             windows.append(window)
             views.append(view)
 
-            if let saved = Self.savedSelection(for: screen) {
-                view.presentInitialRect(saved)
+            if captureMode == .drag {
+                view.presentInitialRect(Self.defaultDragSelection(in: view.bounds))
                 restoredWindow = window
             }
         }
 
-        // A drag on one screen clears any selection shown on the others.
+        // A selection on one screen clears any selection shown on the others.
         for view in views {
             view.onSelectionBegan = { [weak view] in
                 for other in views where other !== view {
@@ -84,12 +182,11 @@ final class SelectionOverlayController {
         }
     }
 
-    private func finish(viewRect: CGRect, screen: NSScreen) {
+    private func finish(viewRect: CGRect, screen: NSScreen, windowID: CGWindowID?) {
         guard viewRect.width > 10, viewRect.height > 10 else {
             cancel()
             return
         }
-        Self.saveSelection(viewRect, for: screen)
         closeAll()
 
         // AppKit views use bottom-left origin; ScreenCaptureKit's sourceRect uses top-left origin.
@@ -109,7 +206,13 @@ final class SelectionOverlayController {
                     self.completion(nil)
                     return
                 }
-                self.completion(SelectionResult(rect: rect, display: display, screen: screen))
+                self.completion(SelectionResult(
+                    rect: rect,
+                    display: display,
+                    screen: screen,
+                    captureMode: self.captureMode,
+                    windowID: windowID
+                ))
             }
         }
     }
@@ -128,34 +231,20 @@ final class SelectionOverlayController {
         windows.removeAll()
     }
 
-    // MARK: - Selection memory
-
-    private static func saveSelection(_ rect: CGRect, for screen: NSScreen) {
-        guard let id = displayID(of: screen) else { return }
-        let d = UserDefaults.standard
-        d.set(NSStringFromRect(rect), forKey: savedRectKey)
-        d.set(Int(id), forKey: savedScreenKey)
-    }
-
-    private static func savedSelection(for screen: NSScreen) -> NSRect? {
-        let d = UserDefaults.standard
-        guard let rectString = d.string(forKey: savedRectKey),
-              let id = displayID(of: screen),
-              d.integer(forKey: savedScreenKey) == Int(id) else { return nil }
-        let rect = NSRectFromString(rectString)
-        guard rect.width > 10, rect.height > 10 else { return nil }
-        return rect
-    }
-
-    private static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
-        guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return nil
-        }
-        return CGDirectDisplayID(number.uint32Value)
+    static func defaultDragSelection(in bounds: NSRect) -> NSRect {
+        let target = NSSize(width: 1280, height: 720)
+        let scale = min(1, bounds.width / target.width, bounds.height / target.height)
+        let size = NSSize(width: target.width * scale, height: target.height * scale)
+        return NSRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     private static func matchDisplay(for screen: NSScreen) async -> SCDisplay? {
-        guard let displayID = displayID(of: screen) else { return nil }
+        guard let displayID = WindowCaptureGeometry.displayID(of: screen) else { return nil }
         guard let content = try? await SCShareableContent.current else { return nil }
         return content.displays.first { $0.displayID == displayID }
     }

@@ -26,7 +26,7 @@ final class RecordingOverlayController: NSObject {
     private let keyBindings = AppSettings.load()
 
     private let screen: NSScreen
-    private let topLeftRect: CGRect
+    private var topLeftRect: CGRect
     private let onStop: () -> Void
 
     /// Fires when the effective zoom state (button or configured hold key) changes.
@@ -76,6 +76,56 @@ final class RecordingOverlayController: NSObject {
         timer = scheduled(1) { [weak self] in self?.tick() }
         modifierTimer = scheduled(0.1) { [weak self] in self?.pollModifiers() }
         indicatorTimer = scheduled(1.0 / 30.0) { [weak self] in self?.updateZoomIndicator() }
+    }
+
+    /// Keeps the visible capture affordances attached to a followed window.
+    /// Follow mode preserves the original output size, so this is a translation.
+    func updateCaptureRect(_ newRect: CGRect) {
+        let oldRect = topLeftRect
+        guard newRect != oldRect else { return }
+        topLeftRect = newRect
+
+        let oldLocalRect = NSRect(
+            x: oldRect.minX,
+            y: screen.frame.height - oldRect.minY - oldRect.height,
+            width: oldRect.width,
+            height: oldRect.height
+        )
+        let localRect = NSRect(
+            x: newRect.minX,
+            y: screen.frame.height - newRect.minY - newRect.height,
+            width: newRect.width,
+            height: newRect.height
+        )
+        dimView?.cutout = localRect
+        // Only the old and new borders/cutouts changed. Invalidating the entire
+        // display here made following more expensive than the window movement.
+        dimView?.setNeedsDisplay(oldLocalRect.insetBy(dx: -3, dy: -3))
+        dimView?.setNeedsDisplay(localRect.insetBy(dx: -3, dy: -3))
+
+        let drawFrame = NSRect(
+            x: screen.frame.origin.x + localRect.minX,
+            y: screen.frame.origin.y + localRect.minY,
+            width: localRect.width,
+            height: localRect.height
+        )
+        drawWindow?.setFrame(drawFrame, display: false)
+
+        let delta = NSPoint(
+            x: newRect.minX - oldRect.minX,
+            y: -(newRect.minY - oldRect.minY)
+        )
+        for window in [panel, toolPanel].compactMap({ $0 }) {
+            var origin = NSPoint(
+                x: window.frame.origin.x + delta.x,
+                y: window.frame.origin.y + delta.y
+            )
+            origin.x = max(screen.frame.minX + 4,
+                           min(origin.x, screen.frame.maxX - window.frame.width - 4))
+            origin.y = max(screen.frame.minY + 4,
+                           min(origin.y, screen.frame.maxY - window.frame.height - 4))
+            window.setFrameOrigin(origin)
+        }
     }
 
     /// Timers added to .common so they keep firing during mouse-drag tracking.

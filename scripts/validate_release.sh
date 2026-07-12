@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-EXPECTED_VERSION="${1:-0.5.5}"
+EXPECTED_VERSION="${1:-0.6.7}"
 ZIP_PATH=".build/dist/GifCapture.zip"
 EXPECTED_BUNDLE_ID="com.robbiecase.gifcapture"
 

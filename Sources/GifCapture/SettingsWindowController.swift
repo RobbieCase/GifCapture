@@ -12,6 +12,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private let autoCopyCheckbox = NSButton(checkboxWithTitle: "Copy GIF to clipboard after saving", target: nil, action: nil)
     private let exportMP4Checkbox = NSButton(checkboxWithTitle: "Also save an MP4 copy", target: nil, action: nil)
+    private let captureModePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let followWindowCheckbox = NSButton(
+        checkboxWithTitle: "Follow selected window while recording",
+        target: nil,
+        action: nil
+    )
     private let countdownCheckbox = NSButton(checkboxWithTitle: "3 seconds", target: nil, action: nil)
     private let cursorCheckbox = NSButton(checkboxWithTitle: "Show cursor in recording", target: nil, action: nil)
     private let clickIndicatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -67,8 +73,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         qualityValueLabel.alignment = .right
         fpsPopup.addItems(withTitles: AppSettings.fpsChoices.map { "\($0) fps" })
         scalePopup.addItems(withTitles: OutputScale.allCases.map(\.displayName))
+        captureModePopup.addItems(withTitles: CaptureMode.allCases.map(\.displayName))
 
         countdownCheckbox.toolTip = "Wait three seconds after choosing the capture area"
+        followWindowCheckbox.toolTip = "Experimental: follows window movement on its current display"
         reloadClickIndicatorModeItems()
         clickIndicatorColorWell.widthAnchor.constraint(equalToConstant: 44).isActive = true
         clickIndicatorColorWell.heightAnchor.constraint(equalToConstant: 24).isActive = true
@@ -76,6 +84,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let ordinaryControls: [NSControl] = [
             encoderPopup, qualitySlider, fpsPopup, scalePopup,
             autoCopyCheckbox, exportMP4Checkbox,
+            captureModePopup, followWindowCheckbox,
             countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
             zoomModifierPopup, drawModifierPopup, clickIndicatorModifierPopup,
         ]
@@ -109,12 +118,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
         configure(grid: outputGrid)
 
-        let captureGrid = NSGridView(views: [
+        var captureRows: [[NSView]] = [
+            [label("Capture mode:"), captureModePopup],
             [label("Countdown:"), countdownCheckbox],
             [label("Cursor:"), cursorCheckbox],
             [label("Click indicator:"), clickIndicatorPopup],
             [label("Indicator color:"), clickIndicatorColorWell],
-        ])
+        ]
+        if FeatureFlags.followWindow {
+            captureRows.insert([label("Window mode:"), followWindowCheckbox], at: 1)
+        }
+        let captureGrid = NSGridView(views: captureRows)
         configureLeftAligned(grid: captureGrid)
 
         clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
@@ -154,7 +168,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             hint("Higher quality, frame rate, and 2× size increase the GIF's file size."),
             separator(),
             sectionTitle("Capture"), captureGrid,
-            hint("The countdown and click highlighting are off by default. Indicator color applies when click highlighting is enabled."),
+            hint(FeatureFlags.followWindow
+                ? "Drag Selection is the default. Window mode snaps to shadowless window bounds; experimental following stays on the selected display."
+                : "Drag Selection is the default. Window mode snaps to shadowless, edge-cropped window bounds."),
             separator(),
             sectionTitle("Key Bindings"), shortcutGrid,
             hint("Stop Recording is active only while recording. The click modifier is available when modifier-click highlighting is selected above."),
@@ -276,6 +292,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scalePopup.selectItem(at: OutputScale.allCases.firstIndex(of: settings.scale) ?? 0)
         autoCopyCheckbox.state = settings.autoCopyToClipboard ? .on : .off
         exportMP4Checkbox.state = settings.exportMP4 ? .on : .off
+        captureModePopup.selectItem(at: CaptureMode.allCases.firstIndex(of: settings.captureMode) ?? 0)
+        followWindowCheckbox.state = settings.followWindow ? .on : .off
+        followWindowCheckbox.isEnabled = settings.captureMode == .window
         countdownCheckbox.state = settings.countdownEnabled ? .on : .off
         cursorCheckbox.state = settings.showCursor ? .on : .off
         reloadClickIndicatorModeItems()
@@ -313,6 +332,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.scale = OutputScale.allCases[max(0, scalePopup.indexOfSelectedItem)]
         settings.autoCopyToClipboard = autoCopyCheckbox.state == .on
         settings.exportMP4 = exportMP4Checkbox.state == .on
+        settings.captureMode = CaptureMode.allCases[max(0, captureModePopup.indexOfSelectedItem)]
+        settings.followWindow = followWindowCheckbox.state == .on
         settings.countdownEnabled = countdownCheckbox.state == .on
         settings.showCursor = cursorCheckbox.state == .on
         settings.clickIndicatorMode = ClickIndicatorMode.allCases[max(0, clickIndicatorPopup.indexOfSelectedItem)]
@@ -322,6 +343,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.clickIndicatorModifier = newClickModifier
         qualityValueLabel.stringValue = String(settings.quality)
         clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
+        followWindowCheckbox.isEnabled = settings.captureMode == .window
         clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorMode == .modifierClick
         reloadClickIndicatorModeItems()
         clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)

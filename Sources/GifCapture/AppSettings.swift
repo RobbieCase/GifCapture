@@ -1,5 +1,12 @@
 import AppKit
 
+/// Experimental features that are intentionally excluded from normal builds.
+/// Launch a local build with GIFCAPTURE_ENABLE_FOLLOW_WINDOW=1 to expose the
+/// current follow-window prototype without shipping it to production users.
+enum FeatureFlags {
+    static let followWindow = ProcessInfo.processInfo.environment["GIFCAPTURE_ENABLE_FOLLOW_WINDOW"] == "1"
+}
+
 enum GifEncoder: String, CaseIterable {
     case gifski
     case ffmpeg
@@ -20,6 +27,20 @@ enum OutputScale: Int, CaseIterable {
         switch self {
         case .standard: return "1× — matches on-screen size"
         case .retina: return "2× — Retina (sharper, much bigger file)"
+        }
+    }
+}
+
+enum CaptureMode: String, CaseIterable {
+    case drag
+    case window
+    case fullScreen
+
+    var displayName: String {
+        switch self {
+        case .drag: return "Drag Selection"
+        case .window: return "Click a Window"
+        case .fullScreen: return "Full Screen"
         }
     }
 }
@@ -81,6 +102,8 @@ struct AppSettings {
     var scale: OutputScale
     var autoCopyToClipboard: Bool
     var exportMP4: Bool
+    var captureMode: CaptureMode
+    var followWindow: Bool
     var countdownEnabled: Bool
     var showCursor: Bool
     var clickIndicatorMode: ClickIndicatorMode
@@ -142,6 +165,8 @@ struct AppSettings {
             scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard,
             autoCopyToClipboard: d.object(forKey: "autoCopyToClipboard") as? Bool ?? true,
             exportMP4: d.bool(forKey: "exportMP4"),
+            captureMode: CaptureMode(rawValue: d.string(forKey: "captureMode") ?? "") ?? .drag,
+            followWindow: FeatureFlags.followWindow && d.bool(forKey: "followWindow"),
             countdownEnabled: d.bool(forKey: "countdownEnabled"),
             showCursor: d.object(forKey: "showCursor") as? Bool ?? true,
             clickIndicatorMode: clickMode,
@@ -169,6 +194,8 @@ struct AppSettings {
         d.set(scale.rawValue, forKey: "scale")
         d.set(autoCopyToClipboard, forKey: "autoCopyToClipboard")
         d.set(exportMP4, forKey: "exportMP4")
+        d.set(captureMode.rawValue, forKey: "captureMode")
+        d.set(followWindow, forKey: "followWindow")
         d.set(countdownEnabled, forKey: "countdownEnabled")
         d.set(showCursor, forKey: "showCursor")
         d.set(clickIndicatorMode.rawValue, forKey: "clickIndicatorMode")

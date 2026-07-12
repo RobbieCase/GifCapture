@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsController: SettingsWindowController?
     private var trimController: TrimWindowController?
     private var libraryController: LibraryWindowController?
+    private var followWindowTimer: Timer?
+    private var followLastRect: CGRect?
     private var lastSelectionPointWidth = 0
     private let hotKeyManager = GlobalHotKeyManager()
     private var isCapturingShortcut = false
@@ -89,7 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func startSelection() {
         guard recorder == nil, selectionController == nil, countdownController == nil else { return }
-        selectionController = SelectionOverlayController { [weak self] result in
+        let captureMode = AppSettings.load().captureMode
+        selectionController = SelectionOverlayController(captureMode: captureMode) { [weak self] result in
             self?.selectionController = nil
             guard let self, let result else { return }
             self.beginRecording(result: result)
@@ -120,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func beginRecordingNow(result: SelectionResult, settings: AppSettings) {
+        let result = refreshedWindowSelection(result)
         let recorder = ScreenRecorder()
         self.recorder = recorder
         lastSelectionPointWidth = Int(result.rect.width)
@@ -137,14 +141,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             do {
+                let shouldFollow = FeatureFlags.followWindow
+                    && settings.followWindow
+                    && result.captureMode == .window
+                    && result.windowID != nil
                 try await recorder.start(
                     rect: result.rect,
                     display: result.display,
                     excludingWindowIDs: overlay.captureExcludedWindowIDs,
-                    showsCursor: settings.showCursor
+                    showsCursor: settings.showCursor,
+                    followsWindow: shouldFollow
                 )
+                if shouldFollow {
+                    await MainActor.run {
+                        self.startFollowingWindow(result: result, recorder: recorder, overlay: overlay)
+                    }
+                }
             } catch {
                 await MainActor.run {
+                    self.stopFollowingWindow()
                     self.showError("Couldn't start recording", error)
                     self.recordingOverlay?.close()
                     self.recordingOverlay = nil
@@ -158,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopRecording() {
         guard let recorder else { return }
+        stopFollowingWindow()
         recordingOverlay?.close()
         recordingOverlay = nil
         rebuildMenu()
@@ -179,6 +195,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func refreshedWindowSelection(_ result: SelectionResult) -> SelectionResult {
+        guard result.captureMode == .window,
+              let windowID = result.windowID,
+              let rect = WindowCaptureGeometry.displayRelativeRect(
+                  for: windowID,
+                  displayID: result.display.displayID
+              ) else { return result }
+        return SelectionResult(
+            rect: rect,
+            display: result.display,
+            screen: result.screen,
+            captureMode: result.captureMode,
+            windowID: windowID
+        )
+    }
+
+    private func startFollowingWindow(
+        result: SelectionResult,
+        recorder: ScreenRecorder,
+        overlay: RecordingOverlayController
+    ) {
+        stopFollowingWindow()
+        guard let windowID = result.windowID else { return }
+        followLastRect = result.rect
+        let fixedSize = result.rect.size
+
+        let refreshRate = min(120, max(60, result.screen.maximumFramesPerSecond))
+        let timer = Timer(timeInterval: 1.0 / Double(refreshRate), repeats: true) { [weak self, weak recorder, weak overlay] _ in
+            guard let self, let recorder, let overlay,
+                  let rect = WindowCaptureGeometry.displayRelativeRect(
+                      for: windowID,
+                      displayID: result.display.displayID,
+                      fixedSize: fixedSize
+                  ), rect != self.followLastRect else { return }
+            recorder.setFollowCaptureRect(rect)
+            overlay.updateCaptureRect(rect)
+            self.followLastRect = rect
+        }
+        timer.tolerance = 0.001
+        RunLoop.main.add(timer, forMode: .common)
+        followWindowTimer = timer
+    }
+
+    private func stopFollowingWindow() {
+        followWindowTimer?.invalidate()
+        followWindowTimer = nil
+        followLastRect = nil
     }
 
     @objc private func cancelCountdown() {

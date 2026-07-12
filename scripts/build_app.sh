@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.6.3"
-BUILD_NUMBER="603"
+VERSION="0.6.7"
+BUILD_NUMBER="607"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
@@ -98,11 +98,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-# The project lives in an iCloud-synced folder whose file provider tags files
-# with metadata mid-build; codesign rejects it as "detritus". Clear and retry.
-xattr -cr "$APP_DIR" 2>/dev/null || true
+# The project lives in an iCloud-synced folder whose file provider can reattach
+# metadata between xattr cleanup and codesign. Sign a clean staging copy outside
+# iCloud, then use that copy for distribution and installation.
+SIGN_STAGE_ROOT="$(mktemp -d /tmp/gifcapture-sign.XXXXXX)"
+trap 'rm -rf "$SIGN_STAGE_ROOT"' EXIT
+SIGN_APP="$SIGN_STAGE_ROOT/$APP_NAME.app"
+ditto --noextattr --noacl --norsrc "$APP_DIR" "$SIGN_APP"
+xattr -cr "$SIGN_APP" 2>/dev/null || true
 for attempt in 1 2 3; do
-  if codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DIR" 2>/dev/null; then
+  if codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$SIGN_APP" 2>/dev/null; then
     break
   fi
   if [ "$attempt" = 3 ]; then
@@ -110,9 +115,13 @@ for attempt in 1 2 3; do
     exit 1
   fi
   echo "codesign attempt $attempt failed; clearing metadata and retrying..."
-  xattr -cr "$APP_DIR" 2>/dev/null || true
+  xattr -cr "$SIGN_APP" 2>/dev/null || true
   sleep 1
 done
+# Keep the conventional build artifact in place too. The canonical signed copy
+# for the remaining build steps is SIGN_APP, which cannot be retagged by iCloud.
+rm -rf "$APP_DIR"
+ditto --noextattr --noacl --norsrc "$SIGN_APP" "$APP_DIR"
 
 # Distribution copy: ALWAYS ad-hoc signed. Other Macs don't trust the local
 # certificate, and macOS won't persist TCC grants for an app whose signature
@@ -120,28 +129,21 @@ done
 DIST_DIR=".build/dist"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
-# ditto without extended attributes: codesign rejects copied Finder metadata.
-# macOS sometimes re-tags fresh files with provenance xattrs mid-copy (race),
-# so retry a few times.
-for attempt in 1 2 3; do
-  rm -rf "$DIST_DIR/$APP_NAME.app"
-  ditto --noextattr --noacl --norsrc "$APP_DIR" "$DIST_DIR/$APP_NAME.app"
-  # Distribution builds must allow the updater even when the local build used
-  # the development certificate.
-  plutil -replace GifCaptureBuildKind -string release "$DIST_DIR/$APP_NAME.app/Contents/Info.plist"
-  if codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_DIR/$APP_NAME.app" 2>/dev/null; then
-    break
-  fi
-  if [ "$attempt" = 3 ]; then
-    echo "ERROR: dist codesign failed after 3 attempts" >&2
-    exit 1
-  fi
-  echo "dist codesign attempt $attempt failed; retrying..."
-  sleep 1
-done
+# Sign the distribution variant in the same non-iCloud staging directory. The
+# workspace file provider can otherwise attach metadata between copy and sign.
+mkdir -p "$SIGN_STAGE_ROOT/release"
+DIST_SIGN_APP="$SIGN_STAGE_ROOT/release/$APP_NAME.app"
+ditto --noextattr --noacl --norsrc "$SIGN_APP" "$DIST_SIGN_APP"
+plutil -replace GifCaptureBuildKind -string release "$DIST_SIGN_APP/Contents/Info.plist"
+xattr -cr "$DIST_SIGN_APP" 2>/dev/null || true
+codesign --force --sign - --identifier "$BUNDLE_ID" "$DIST_SIGN_APP"
+
+# Keep an unpacked distribution artifact for inspection, but create the release
+# zip directly from the canonical staging copy.
+ditto --noextattr --noacl --norsrc "$DIST_SIGN_APP" "$DIST_DIR/$APP_NAME.app"
 # Zip without extended attributes — macOS re-tags signed files with provenance
 # xattrs that read as "detritus" and break signature verification on other Macs.
-ditto --noextattr --noacl --norsrc -c -k --keepParent "$DIST_DIR/$APP_NAME.app" "$DIST_DIR/$APP_NAME.zip"
+ditto --noextattr --noacl --norsrc -c -k --keepParent "$DIST_SIGN_APP" "$DIST_DIR/$APP_NAME.zip"
 echo "Distribution zip (ad-hoc signed, for releases): $DIST_DIR/$APP_NAME.zip"
 
 echo "Built $APP_DIR"
@@ -160,7 +162,7 @@ elif [ -w /Applications ] || [ -w "$INSTALL_DIR" ]; then
   # Copy without Finder/resource metadata, then sign the installed copy. An
   # empty com.apple.FinderInfo xattr is still enough for strict signature
   # validation (and Screen Recording/TCC) to reject an otherwise valid app.
-  ditto --noextattr --noacl --norsrc "$APP_DIR" "$INSTALL_DIR"
+  ditto --noextattr --noacl --norsrc "$SIGN_APP" "$INSTALL_DIR"
   xattr -cr "$INSTALL_DIR" 2>/dev/null || true
   codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$INSTALL_DIR"
   if [ -n "$PREVIOUS_BUILD_KIND" ] && [ "$PREVIOUS_BUILD_KIND" != "$BUILD_KIND" ]; then

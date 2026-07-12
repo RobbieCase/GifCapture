@@ -71,10 +71,10 @@ Recording) — you may need to quit and relaunch the app after granting it.
 ## Use
 
 1. Click the menu bar icon → **Record New GIF…**
-2. Drag to select the region you want to capture. The selection stays adjustable:
-   drag the corner/edge handles to resize, drag inside it to move, click outside
-   to start over (Esc cancels). Your last selection is remembered and restored
-   the next time you record.
+2. Drag Selection starts with a centered 1280×720 frame (scaled down only on a
+   smaller display). Drag to replace it, or adjust it with the corner/edge
+   handles and move it from inside the box. Click outside to start over; Esc
+   cancels.
 3. Click **Record** (or press Return) to start recording.
 4. While recording, everything outside the box is dimmed. Hold the **zoom
    modifier** (default Control) to follow the cursor at 2×, or hold the **draw
@@ -84,10 +84,8 @@ Recording) — you may need to quit and relaunch the app after granting it.
    The controls themselves are excluded from the capture.
 5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
 6. The GIF is copied to the clipboard (configurable), a notification shows the
-   file size, and the Library opens with it at the top of the grid. The menu
-   bar's **Recent Captures** submenu re-copies any of the last five GIFs —
-   hold Option to reveal one in Finder instead. Right-click a GIF in the
-   Library for the macOS **Share…** sheet.
+   file size, and the Library opens with it at the top of the grid. Right-click
+   a GIF in the Library for the macOS **Share…** sheet.
 
 Encoder, quality, frame rate, output size, clipboard/MP4 export behavior,
 cursor visibility, and an optional three-second countdown are configurable via
@@ -95,6 +93,19 @@ the menu bar icon → **Settings…**. "Also save an MP4 copy" writes a sibling
 .mp4 next to each GIF — often ~10× smaller and it autoplays in chat apps.
 You can also add a colored click indicator to every click, or use its configurable
 modifier binding so only intentional clicks are highlighted.
+
+Drag Selection remains the default capture mode. Settings can instead remember
+**Click a Window** mode, which highlights the window under the pointer and snaps
+to its shadowless, edge-cropped bounds, or **Full Screen** mode, which lets you
+choose a display.
+
+In Drag Selection mode, a size menu sits outside the box with exact presets for
+product demos, social and marketing creative, email heroes, and common display-ad
+formats such as leaderboard, billboard, rectangle, half-page, skyscraper, and
+mobile banners. Presets that do not fit the selected display are disabled, and
+the box remains freely adjustable after a preset is applied. Use **Add Custom
+Size…** to name and save your own exact dimensions across launches; saved sizes
+can also be removed from the same menu.
 
 ### Key bindings
 
