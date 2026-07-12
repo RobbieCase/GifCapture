@@ -38,6 +38,7 @@ final class RecordingOverlayController: NSObject {
     private var indicatorZoom: CGFloat = 1.0
     private var toolPanelDocked = false
     private weak var penOptionsButton: NSButton?
+    private weak var annotationTextField: NSTextField?
 
     init(screen: NSScreen, topLeftRect: CGRect, onStop: @escaping () -> Void) {
         self.screen = screen
@@ -61,7 +62,7 @@ final class RecordingOverlayController: NSObject {
 
         // When the box spans the screen, the pen palette can't sit beside it;
         // it collapses into a HUD button that expands the palette on demand.
-        let toolWidth: CGFloat = 172
+        let toolWidth: CGFloat = 210
         let fitsRight = localRect.maxX + 10 + toolWidth <= screen.frame.width - 4
         let fitsLeft = localRect.minX - toolWidth - 10 >= 4
         toolPanelDocked = !(fitsRight || fitsLeft)
@@ -273,8 +274,8 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func showToolPanel(beside rect: NSRect, hudFrame: NSRect) {
-        let width: CGFloat = 172
-        let height: CGFloat = 144
+        let width: CGFloat = 210
+        let height: CGFloat = 206
         let gap: CGFloat = 10
 
         // Prefer the right side of the capture box, then the left. When neither
@@ -307,13 +308,16 @@ final class RecordingOverlayController: NSObject {
             images: [
                 symbol("scribble", "Free draw"),
                 symbol("line.diagonal", "Straight line"),
+                symbol("arrow.up.right", "Arrow"),
                 symbol("rectangle", "Rectangle"),
                 symbol("circle", "Ellipse"),
+                symbol("textformat", "Text label"),
             ],
             trackingMode: .selectOne,
             target: self, action: #selector(toolChanged(_:))
         )
-        tools.selectedSegment = 0
+        let savedTool = min(5, max(0, UserDefaults.standard.integer(forKey: "annotationTool")))
+        tools.selectedSegment = savedTool
         tools.frame = NSRect(x: 10, y: height - 34, width: width - 20, height: 24)
         container.addSubview(tools)
 
@@ -334,14 +338,17 @@ final class RecordingOverlayController: NSObject {
             button.layer?.backgroundColor = color.cgColor
             button.layer?.cornerRadius = swatchSize / 2
             button.layer?.borderColor = NSColor.white.cgColor
-            button.layer?.borderWidth = index == 0 ? 2 : 0
+            let savedColor = min(colors.count - 1, max(0, UserDefaults.standard.integer(forKey: "annotationColor")))
+            button.layer?.borderWidth = index == savedColor ? 2 : 0
             button.tag = index
             button.target = self
             button.action = #selector(colorPicked(_:))
             container.addSubview(button)
             swatchButtons.append(button)
         }
-        drawView?.strokeColor = colors[0]
+        let savedColor = min(colors.count - 1, max(0, UserDefaults.standard.integer(forKey: "annotationColor")))
+        drawView?.strokeColor = colors[savedColor]
+        drawView?.tool = PenDrawingView.Tool.allCases[savedTool]
 
         // Fade picker
         let fadeLabel = NSTextField(labelWithString: "Fade after")
@@ -352,10 +359,45 @@ final class RecordingOverlayController: NSObject {
 
         let fade = NSPopUpButton(frame: NSRect(x: 74, y: height - 97, width: width - 84, height: 24), pullsDown: false)
         fade.addItems(withTitles: ["1 s", "3 s", "5 s", "10 s", "Never"])
-        fade.selectItem(at: 1)
+        let savedFade = min(4, max(0, UserDefaults.standard.object(forKey: "annotationFade") as? Int ?? 1))
+        fade.selectItem(at: savedFade)
         fade.target = self
         fade.action = #selector(fadeChanged(_:))
         container.addSubview(fade)
+        drawView?.fadeAfter = [1, 3, 5, 10, .infinity][savedFade]
+
+        let thicknessLabel = NSTextField(labelWithString: "Stroke")
+        thicknessLabel.textColor = .white
+        thicknessLabel.font = .systemFont(ofSize: 11)
+        thicknessLabel.frame = NSRect(x: 10, y: height - 122, width: 42, height: 16)
+        container.addSubview(thicknessLabel)
+        let thickness = NSPopUpButton(frame: NSRect(x: 52, y: height - 127, width: 78, height: 24), pullsDown: false)
+        thickness.addItems(withTitles: ["2 pt", "4 pt", "6 pt", "10 pt"])
+        let savedThickness = min(3, max(0, UserDefaults.standard.object(forKey: "annotationThickness") as? Int ?? 1))
+        thickness.selectItem(at: savedThickness)
+        thickness.target = self
+        thickness.action = #selector(thicknessChanged(_:))
+        container.addSubview(thickness)
+        drawView?.strokeWidth = [2, 4, 6, 10][savedThickness]
+
+        let undo = NSButton(title: "Undo", target: self, action: #selector(undoAnnotation))
+        undo.frame = NSRect(x: 136, y: height - 127, width: 64, height: 24)
+        undo.bezelStyle = .rounded
+        container.addSubview(undo)
+
+        let text = NSTextField(string: UserDefaults.standard.string(forKey: "annotationText") ?? "Text")
+        text.placeholderString = "Label text"
+        text.frame = NSRect(x: 10, y: height - 157, width: 120, height: 22)
+        text.target = self
+        text.action = #selector(annotationTextChanged(_:))
+        container.addSubview(text)
+        annotationTextField = text
+        drawView?.labelText = text.stringValue
+
+        let clear = NSButton(title: "Clear All", target: self, action: #selector(clearAnnotations))
+        clear.frame = NSRect(x: 136, y: height - 158, width: 64, height: 24)
+        clear.bezelStyle = .rounded
+        container.addSubview(clear)
 
         let lock = NSButton(
             checkboxWithTitle: "Keep pen on",
@@ -466,8 +508,9 @@ final class RecordingOverlayController: NSObject {
     }
 
     @objc private func toolChanged(_ sender: NSSegmentedControl) {
-        let tools: [PenDrawingView.Tool] = [.free, .line, .rect, .ellipse]
-        drawView?.tool = tools[max(0, min(sender.selectedSegment, tools.count - 1))]
+        let index = max(0, min(sender.selectedSegment, PenDrawingView.Tool.allCases.count - 1))
+        drawView?.tool = PenDrawingView.Tool.allCases[index]
+        UserDefaults.standard.set(index, forKey: "annotationTool")
     }
 
     @objc private func colorPicked(_ sender: NSButton) {
@@ -475,6 +518,7 @@ final class RecordingOverlayController: NSObject {
                                  .systemBlue, .systemPurple, .white, .black]
         guard colors.indices.contains(sender.tag) else { return }
         drawView?.strokeColor = colors[sender.tag]
+        UserDefaults.standard.set(sender.tag, forKey: "annotationColor")
         for button in swatchButtons {
             button.layer?.borderWidth = button == sender ? 2 : 0
         }
@@ -484,7 +528,24 @@ final class RecordingOverlayController: NSObject {
         let values: [Double] = [1, 3, 5, 10, .infinity]
         guard values.indices.contains(sender.indexOfSelectedItem) else { return }
         drawView?.fadeAfter = values[sender.indexOfSelectedItem]
+        UserDefaults.standard.set(sender.indexOfSelectedItem, forKey: "annotationFade")
     }
+
+    @objc private func thicknessChanged(_ sender: NSPopUpButton) {
+        let values: [CGFloat] = [2, 4, 6, 10]
+        let index = max(0, min(sender.indexOfSelectedItem, values.count - 1))
+        drawView?.strokeWidth = values[index]
+        UserDefaults.standard.set(index, forKey: "annotationThickness")
+    }
+
+    @objc private func annotationTextChanged(_ sender: NSTextField) {
+        let value = sender.stringValue.isEmpty ? "Text" : sender.stringValue
+        drawView?.labelText = value
+        UserDefaults.standard.set(value, forKey: "annotationText")
+    }
+
+    @objc private func undoAnnotation() { drawView?.undo() }
+    @objc private func clearAnnotations() { drawView?.clearAll() }
 
     private func tick() {
         let elapsed = Int(Date().timeIntervalSince(startTime))
@@ -556,10 +617,12 @@ private final class RecordingDimView: NSView {
 /// (this window is not capture-excluded) and fade out after each stroke is
 /// finished, per the tool panel's fade setting.
 final class PenDrawingView: NSView {
-    enum Tool { case free, line, rect, ellipse }
+    enum Tool: CaseIterable { case free, line, arrow, rect, ellipse, text }
 
     var tool: Tool = .free
     var strokeColor: NSColor = .systemRed
+    var strokeWidth: CGFloat = 4
+    var labelText = "Text"
     var fadeAfter: Double = 3
     var penActive = false {
         didSet { window?.invalidateCursorRects(for: self) }
@@ -570,6 +633,8 @@ final class PenDrawingView: NSView {
         let color: NSColor
         let fadeAfter: Double
         var finishedAt: Date?
+        let text: String?
+        let textPoint: NSPoint?
     }
 
     private struct ClickPulse {
@@ -588,7 +653,14 @@ final class PenDrawingView: NSView {
         anchor = convert(event.locationInWindow, from: nil)
         let path = newPath()
         if tool == .free { path.move(to: anchor) }
-        strokes.append(Stroke(path: path, color: strokeColor, fadeAfter: fadeAfter, finishedAt: nil))
+        strokes.append(Stroke(
+            path: path,
+            color: strokeColor,
+            fadeAfter: fadeAfter,
+            finishedAt: tool == .text ? Date() : nil,
+            text: tool == .text ? labelText : nil,
+            textPoint: tool == .text ? anchor : nil
+        ))
         ensureFadeTimer()
         needsDisplay = true
     }
@@ -600,7 +672,7 @@ final class PenDrawingView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard !strokes.isEmpty else { return }
+        guard !strokes.isEmpty, tool != .text else { return }
         let point = convert(event.locationInWindow, from: nil)
         switch tool {
         case .free:
@@ -610,22 +682,26 @@ final class PenDrawingView: NSView {
             path.move(to: anchor)
             path.line(to: point)
             strokes[strokes.count - 1].path = path
+        case .arrow:
+            strokes[strokes.count - 1].path = arrowPath(to: point)
         case .rect:
             strokes[strokes.count - 1].path = shapePath { NSBezierPath(rect: rect(to: point)) }
         case .ellipse:
             strokes[strokes.count - 1].path = shapePath { NSBezierPath(ovalIn: rect(to: point)) }
+        case .text:
+            break
         }
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard !strokes.isEmpty else { return }
+        guard !strokes.isEmpty, tool != .text else { return }
         strokes[strokes.count - 1].finishedAt = Date()
     }
 
     private func newPath() -> NSBezierPath {
         let path = NSBezierPath()
-        path.lineWidth = 4
+        path.lineWidth = strokeWidth
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         return path
@@ -633,10 +709,37 @@ final class PenDrawingView: NSView {
 
     private func shapePath(_ make: () -> NSBezierPath) -> NSBezierPath {
         let path = make()
-        path.lineWidth = 4
+        path.lineWidth = strokeWidth
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         return path
+    }
+
+    private func arrowPath(to point: NSPoint) -> NSBezierPath {
+        let path = newPath()
+        path.move(to: anchor)
+        path.line(to: point)
+        let angle = atan2(point.y - anchor.y, point.x - anchor.x)
+        let head = max(10, strokeWidth * 3)
+        for offset in [CGFloat.pi * 0.82, -CGFloat.pi * 0.82] {
+            path.move(to: point)
+            path.line(to: NSPoint(
+                x: point.x + cos(angle + offset) * head,
+                y: point.y + sin(angle + offset) * head
+            ))
+        }
+        return path
+    }
+
+    func undo() {
+        if !strokes.isEmpty { strokes.removeLast() }
+        needsDisplay = true
+    }
+
+    func clearAll() {
+        strokes.removeAll()
+        clickPulses.removeAll()
+        needsDisplay = true
     }
 
     private func rect(to point: NSPoint) -> NSRect {
@@ -661,8 +764,18 @@ final class PenDrawingView: NSView {
                 alpha = 1
             }
             guard alpha > 0 else { continue }
-            stroke.color.withAlphaComponent(alpha).setStroke()
-            stroke.path.stroke()
+            if let text = stroke.text, let point = stroke.textPoint {
+                let attributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: max(14, strokeWidth * 4), weight: .semibold),
+                    .foregroundColor: stroke.color.withAlphaComponent(alpha),
+                    .strokeColor: NSColor.black.withAlphaComponent(alpha * 0.6),
+                    .strokeWidth: -2,
+                ]
+                NSAttributedString(string: text, attributes: attributes).draw(at: point)
+            } else {
+                stroke.color.withAlphaComponent(alpha).setStroke()
+                stroke.path.stroke()
+            }
         }
         for pulse in clickPulses {
             let progress = min(1, max(0, now.timeIntervalSince(pulse.startedAt) / 0.6))

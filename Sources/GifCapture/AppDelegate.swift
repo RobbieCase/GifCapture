@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         handleQAHook()
     }
 
-    /// Local QA: GIFCAPTURE_QA=library|record|settings drives the app into the
+    /// Local QA: GIFCAPTURE_QA=library|record|settings|trim|annotations drives the app into the
     /// named flow after launch and exits, so smoke tests can run headless.
     private func handleQAHook() {
         guard let mode = ProcessInfo.processInfo.environment["GIFCAPTURE_QA"] else { return }
@@ -53,9 +53,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "library": self?.openLibrary()
             case "record": self?.startSelection()
             case "settings": self?.openSettings()
+            case "trim":
+                if let path = ProcessInfo.processInfo.environment["GIFCAPTURE_QA_VIDEO"] {
+                    self?.lastSelectionPointWidth = 640
+                    self?.presentTrimWindow(videoURL: URL(fileURLWithPath: path))
+                }
+            case "annotations":
+                if let self, let screen = NSScreen.main {
+                    let rect = CGRect(x: 180, y: 150, width: 640, height: 420)
+                    let overlay = RecordingOverlayController(screen: screen, topLeftRect: rect) {}
+                    overlay.show()
+                    self.recordingOverlay = overlay
+                }
             default: break
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            let hold = Double(ProcessInfo.processInfo.environment["GIFCAPTURE_QA_HOLD"] ?? "") ?? 3
+            DispatchQueue.main.asyncAfter(deadline: .now() + hold) {
                 let visible = NSApp.windows.filter(\.isVisible).count
                 print("QA OK mode=\(mode) visibleWindows=\(visible)")
                 exit(0)

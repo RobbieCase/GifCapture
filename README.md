@@ -82,7 +82,10 @@ Recording) — you may need to quit and relaunch the app after granting it.
    the GIF — the pen palette beside the box (docked under the timer when the box
    spans the screen) picks the tool, color, fade time, and a "keep pen on" lock.
    The controls themselves are excluded from the capture.
-5. Click **Stop**, preview the recording, adjust the trim handles, and save the GIF.
+5. Click **Stop** to open the editor. Trim on exact frame boundaries, play/pause,
+   step one frame at a time, crop, resize, change playback speed, or export a
+   reverse/ping-pong loop. An optional target-size export iteratively compresses
+   the GIF below the requested file-size ceiling.
 6. The GIF is copied to the clipboard (configurable), a notification shows the
    file size, and the Library opens with it at the top of the grid. Right-click
    a GIF in the Library for the macOS **Share…** sheet.
@@ -93,6 +96,10 @@ the menu bar icon → **Settings…**. "Also save an MP4 copy" writes a sibling
 .mp4 next to each GIF — often ~10× smaller and it autoplays in chat apps.
 You can also add a colored click indicator to every click, or use its configurable
 modifier binding so only intentional clicks are highlighted.
+
+The recording annotation palette includes freehand, line, arrow, rectangle,
+ellipse, and text tools, plus undo, clear-all, adjustable stroke thickness, and
+remembered tool/color/fade/text preferences.
 
 Drag Selection remains the default capture mode. Settings can instead remember
 **Click a Window** mode, which highlights the window under the pointer and snaps
@@ -126,6 +133,10 @@ Open **Library…** from the menu bar to browse captures as a thumbnail grid or
 Miller columns. Space opens Quick Look; context menus provide Trim, Copy, Reveal,
 and Move to Trash. Drag captures between Library folders to reorganize them, or
 drag a GIF from Finder into the Library to import a copy without moving the original.
+Search matches filenames and tags; sorting supports newest, oldest, name, and file
+size. Favorites, tags, rename, and smart Recent/Large Files/Favorites collections
+are built in. Grid thumbnails show duration, pixel dimensions, and file size, and
+the Library remembers its window frame and view mode.
 
 GifCapture checks GitHub Releases for updates shortly after launch. You can also
 run a manual check from **Check for Updates…**. On a locally signed development

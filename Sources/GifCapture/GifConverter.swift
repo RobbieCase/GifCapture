@@ -3,6 +3,7 @@ import Foundation
 enum GifConverterError: LocalizedError {
     case toolNotFound(String)
     case processFailed(String, String)
+    case targetSizeNotReached(actual: Int, target: Int)
 
     var errorDescription: String? {
         switch self {
@@ -10,6 +11,10 @@ enum GifConverterError: LocalizedError {
             return "\(tool) not found. Install it with: brew install \(tool)"
         case .processFailed(let tool, let message):
             return "\(tool) failed: \(message)"
+        case .targetSizeNotReached(let actual, let target):
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            return "The smallest export was \(formatter.string(fromByteCount: Int64(actual))), above the \(formatter.string(fromByteCount: Int64(target))) target. Try a shorter trim or smaller dimensions."
         }
     }
 }
@@ -51,21 +56,61 @@ enum GifConverter {
     /// `outputWidth` distinguishes point-sized screen recordings from existing
     /// GIFs whose pixel dimensions should be preserved.
     @discardableResult
-    static func convert(videoURL: URL, outputWidth: GifOutputWidth, outputURL explicitOutput: URL? = nil) throws -> URL {
-        let settings = AppSettings.load()
-        let width = outputWidth.pixels(using: settings)
+    static func convert(
+        videoURL: URL,
+        outputWidth: GifOutputWidth,
+        outputURL explicitOutput: URL? = nil,
+        targetBytes: Int? = nil
+    ) throws -> URL {
+        let baseSettings = AppSettings.load()
+        let baseWidth = outputWidth.pixels(using: baseSettings)
 
         let outputURL = explicitOutput ?? makeDefaultOutputURL()
 
         defer { try? FileManager.default.removeItem(at: videoURL) }
 
+        guard let targetBytes, targetBytes > 0 else {
+            try encode(videoURL: videoURL, outputURL: outputURL, width: baseWidth, settings: baseSettings)
+            return outputURL
+        }
+
+        // GIF size is content-dependent, so target-size export is necessarily
+        // iterative. Each pass reduces quality first, then dimensions and FPS.
+        // Stop at the first pass below the requested ceiling.
+        let passes: [(quality: Double, width: Double, fps: Double)] = [
+            (1.00, 1.00, 1.00),
+            (0.85, 1.00, 1.00),
+            (0.72, 0.90, 1.00),
+            (0.60, 0.82, 0.85),
+            (0.50, 0.72, 0.72),
+            (0.40, 0.62, 0.60),
+        ]
+        var finalBytes = Int.max
+        for pass in passes {
+            var settings = baseSettings
+            settings.quality = max(20, Int((Double(baseSettings.quality) * pass.quality).rounded()))
+            settings.fps = max(6, Int((Double(baseSettings.fps) * pass.fps).rounded()))
+            let width = max(160, Int((Double(baseWidth) * pass.width).rounded()))
+            try? FileManager.default.removeItem(at: outputURL)
+            try encode(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
+            finalBytes = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+            if finalBytes <= targetBytes { return outputURL }
+        }
+        throw GifConverterError.targetSizeNotReached(actual: finalBytes, target: targetBytes)
+    }
+
+    private static func encode(
+        videoURL: URL,
+        outputURL: URL,
+        width: Int,
+        settings: AppSettings
+    ) throws {
         switch settings.encoder {
         case .gifski:
             try runGifski(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
         case .ffmpeg:
             try runFFmpeg(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
         }
-        return outputURL
     }
 
     private static func runGifski(videoURL: URL, outputURL: URL, width: Int, settings: AppSettings) throws {

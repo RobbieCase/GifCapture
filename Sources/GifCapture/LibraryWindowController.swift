@@ -8,6 +8,28 @@ import UniformTypeIdentifiers
 /// right-click items for Preview / Trim / Copy / Reveal / Trash. Space = Quick Look.
 final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     private enum ViewMode: Int { case grid = 0, columns = 1 }
+    private enum SmartCollection: Int, CaseIterable {
+        case all, recent, large, favorites
+        var title: String {
+            switch self {
+            case .all: return "All Captures"
+            case .recent: return "Recent"
+            case .large: return "Large Files"
+            case .favorites: return "Favorites"
+            }
+        }
+    }
+    private enum SortMode: Int, CaseIterable {
+        case newest, oldest, name, size
+        var title: String {
+            switch self {
+            case .newest: return "Newest"
+            case .oldest: return "Oldest"
+            case .name: return "Name"
+            case .size: return "File Size"
+            }
+        }
+    }
 
     // Grid state
     private var currentFolder: URL = GifConverter.outputDirectory
@@ -32,6 +54,11 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     private var pathLabel: NSTextField!
     private var modeControl: NSSegmentedControl!
     private var gridMenu: NSMenu!
+    private var searchField: NSSearchField!
+    private var collectionPopup: NSPopUpButton!
+    private var sortPopup: NSPopUpButton!
+    private var shouldCenterOnFirstShow = true
+    private let metadataStore = LibraryMetadataStore.shared
 
     /// Set by menuWillOpen so the context-menu actions know their target.
     private var menuContext: (urls: [URL], folder: URL) = ([], GifConverter.outputDirectory)
@@ -49,7 +76,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 560),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -59,6 +86,8 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 480, height: 320)
         self.init(window: window)
         window.delegate = self
+        window.setFrameAutosaveName("GifCapture.LibraryWindow")
+        shouldCenterOnFirstShow = !window.setFrameUsingName("GifCapture.LibraryWindow")
         mode = ViewMode(rawValue: UserDefaults.standard.integer(forKey: "libraryViewMode")) ?? .grid
         buildUI()
         applyMode()
@@ -67,7 +96,10 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         navigate(to: GifConverter.outputDirectory)
         setColumnFolders([GifConverter.outputDirectory], rebuildFrom: 0)
-        window?.center()
+        if shouldCenterOnFirstShow {
+            window?.center()
+            shouldCenterOnFirstShow = false
+        }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -145,10 +177,31 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         )
         modeControl.selectedSegment = mode.rawValue
 
+        collectionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        collectionPopup.addItems(withTitles: SmartCollection.allCases.map(\.title))
+        collectionPopup.target = self
+        collectionPopup.action = #selector(collectionChanged)
+
+        sortPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        sortPopup.addItems(withTitles: SortMode.allCases.map(\.title))
+        sortPopup.selectItem(at: UserDefaults.standard.integer(forKey: "librarySortMode"))
+        sortPopup.target = self
+        sortPopup.action = #selector(sortChanged)
+
+        searchField = NSSearchField()
+        searchField.placeholderString = "Search names or tags"
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.sendsSearchStringImmediately = true
+        searchField.widthAnchor.constraint(equalToConstant: 180).isActive = true
+
         let revealButton = NSButton(title: "Show in Finder", target: self, action: #selector(revealCurrent))
         revealButton.bezelStyle = .texturedRounded
 
-        let topBar = NSStackView(views: [backButton, pathLabel, NSView(), modeControl, revealButton])
+        let topBar = NSStackView(views: [
+            backButton, pathLabel, NSView(), collectionPopup, sortPopup,
+            searchField, modeControl, revealButton,
+        ])
         topBar.orientation = .horizontal
         topBar.spacing = 8
         topBar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
@@ -178,7 +231,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildGrid() {
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 130, height: 130)
+        layout.itemSize = NSSize(width: 150, height: 156)
         layout.minimumInteritemSpacing = 10
         layout.minimumLineSpacing = 14
         layout.sectionInset = NSEdgeInsets(top: 10, left: 12, bottom: 12, right: 12)
@@ -251,6 +304,27 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Data
 
     private func contents(of folder: URL) -> [URL] {
+        let smart = SmartCollection(rawValue: collectionPopup?.indexOfSelectedItem ?? 0) ?? .all
+        let query = searchField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if smart != .all || !query.isEmpty {
+            return sorted(gifsRecursively(in: GifConverter.outputDirectory).filter { url in
+                let metadata = metadataStore.metadata(for: url)
+                let matchesQuery = query.isEmpty
+                    || url.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveContains(query)
+                    || metadata.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+                guard matchesQuery else { return false }
+                switch smart {
+                case .all: return true
+                case .recent:
+                    let date = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                    return date > Date().addingTimeInterval(-7 * 24 * 60 * 60)
+                case .large:
+                    return ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) >= 10_000_000
+                case .favorites:
+                    return metadata.favorite
+                }
+            })
+        }
         let fm = FileManager.default
         let all = (try? fm.contentsOfDirectory(
             at: folder,
@@ -260,14 +334,35 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         let folders = all
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        let gifs = all
-            .filter { $0.pathExtension.lowercased() == "gif" }
-            .sorted {
-                let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-                return a > b
-            }
+        let gifs = sorted(all.filter { $0.pathExtension.lowercased() == "gif" })
         return folders + gifs
+    }
+
+    private func gifsRecursively(in folder: URL) -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey, .creationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return enumerator.compactMap { ($0 as? URL) }.filter { $0.pathExtension.lowercased() == "gif" }
+    }
+
+    private func sorted(_ gifs: [URL]) -> [URL] {
+        let mode = SortMode(rawValue: sortPopup?.indexOfSelectedItem ?? 0) ?? .newest
+        return gifs.sorted { lhs, rhs in
+            switch mode {
+            case .newest, .oldest:
+                let left = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                let right = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+                return mode == .newest ? left > right : left < right
+            case .name:
+                return lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedAscending
+            case .size:
+                let left = (try? lhs.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                let right = (try? rhs.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return left > right
+            }
+        }
     }
 
     private func isFolder(_ url: URL) -> Bool {
@@ -283,6 +378,17 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateGridPathLabel() {
         guard mode == .grid else { return }
+        let smart = SmartCollection(rawValue: collectionPopup?.indexOfSelectedItem ?? 0) ?? .all
+        if smart != .all {
+            pathLabel.stringValue = smart.title
+            backButton.isEnabled = false
+            return
+        }
+        if let query = searchField?.stringValue, !query.isEmpty {
+            pathLabel.stringValue = "Search Results"
+            backButton.isEnabled = false
+            return
+        }
         let base = GifConverter.outputDirectory.path
         let relative = currentFolder.path.replacingOccurrences(of: base, with: "GifCaptures")
         pathLabel.stringValue = relative.replacingOccurrences(of: "/", with: " › ")
@@ -398,6 +504,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
                 if isInternal {
                     try fm.moveItem(at: url, to: target)
+                    metadataStore.move(from: url, to: target)
                 } else {
                     try fm.copyItem(at: url, to: target)
                 }
@@ -472,6 +579,29 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         } else {
             reloadGrid()
         }
+    }
+
+    @objc private func collectionChanged() {
+        if collectionPopup.indexOfSelectedItem != SmartCollection.all.rawValue {
+            modeControl.selectedSegment = ViewMode.grid.rawValue
+            mode = .grid
+        }
+        reloadGrid()
+        updateGridPathLabel()
+    }
+
+    @objc private func sortChanged() {
+        UserDefaults.standard.set(sortPopup.indexOfSelectedItem, forKey: "librarySortMode")
+        reloadAll()
+    }
+
+    @objc private func searchChanged() {
+        if !searchField.stringValue.isEmpty {
+            modeControl.selectedSegment = ViewMode.grid.rawValue
+            mode = .grid
+        }
+        reloadGrid()
+        updateGridPathLabel()
     }
 
     @objc private func revealCurrent() {
@@ -568,6 +698,58 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         NSPasteboard.general.writeObjects(menuContext.urls as [NSURL])
     }
 
+    @objc private func contextToggleFavorite() {
+        let gifs = menuContext.urls.filter { !isFolder($0) }
+        let makeFavorite = gifs.contains { !metadataStore.metadata(for: $0).favorite }
+        for gif in gifs { metadataStore.setFavorite(makeFavorite, for: gif) }
+        reloadAll()
+    }
+
+    @objc private func contextRename() {
+        guard menuContext.urls.count == 1, let url = menuContext.urls.first else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename"
+        alert.informativeText = "Enter a new name:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = isFolder(url) ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let filename = isFolder(url) ? name : name + "." + url.pathExtension
+        let target = url.deletingLastPathComponent().appendingPathComponent(filename)
+        guard !FileManager.default.fileExists(atPath: target.path) else {
+            showLibraryMessage("That name is already used", filename)
+            return
+        }
+        do {
+            try FileManager.default.moveItem(at: url, to: target)
+            metadataStore.move(from: url, to: target)
+            reloadAll()
+        } catch { showError("Couldn't rename item", error) }
+    }
+
+    @objc private func contextEditTags() {
+        let gifs = menuContext.urls.filter { !isFolder($0) }
+        guard !gifs.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = gifs.count == 1 ? "Tags" : "Tags for \(gifs.count) GIFs"
+        alert.informativeText = "Separate tags with commas:"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        if let first = gifs.first { field.stringValue = metadataStore.metadata(for: first).tags.joined(separator: ", ") }
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let tags = field.stringValue.split(separator: ",").map(String.init)
+        for gif in gifs { metadataStore.setTags(tags, for: gif) }
+        reloadAll()
+    }
+
     @objc private func contextShare() {
         let gifs = menuContext.urls.filter { !isFolder($0) }
         guard !gifs.isEmpty, let anchorView = shareAnchorView else { return }
@@ -586,7 +768,9 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func contextTrash() {
         for url in menuContext.urls {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            if (try? FileManager.default.trashItem(at: url, resultingItemURL: nil)) != nil {
+                metadataStore.remove(url)
+            }
         }
         reloadAll()
     }
@@ -650,6 +834,14 @@ extension LibraryWindowController: NSMenuDelegate {
             menu.addItem(withTitle: "Copy to Clipboard", action: #selector(contextCopy), keyEquivalent: "")
             let share = menu.addItem(withTitle: "Share…", action: #selector(contextShare), keyEquivalent: "")
             share.isEnabled = !gifs.isEmpty
+            let favoriteTitle = gifs.allSatisfy { metadataStore.metadata(for: $0).favorite }
+                ? "Remove from Favorites" : "Add to Favorites"
+            let favorite = menu.addItem(withTitle: favoriteTitle, action: #selector(contextToggleFavorite), keyEquivalent: "")
+            favorite.isEnabled = !gifs.isEmpty
+            let tags = menu.addItem(withTitle: "Tags…", action: #selector(contextEditTags), keyEquivalent: "")
+            tags.isEnabled = !gifs.isEmpty
+            let rename = menu.addItem(withTitle: "Rename…", action: #selector(contextRename), keyEquivalent: "")
+            rename.isEnabled = clickedURLs.count == 1
             menu.addItem(.separator())
             menu.addItem(withTitle: "Show in Finder", action: #selector(contextReveal), keyEquivalent: "")
             menu.addItem(.separator())
@@ -682,7 +874,12 @@ extension LibraryWindowController: NSCollectionViewDataSource, NSCollectionViewD
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let cell = collectionView.makeItem(withIdentifier: LibraryCell.identifier, for: indexPath)
         guard let libraryCell = cell as? LibraryCell, items.indices.contains(indexPath.item) else { return cell }
-        libraryCell.configure(with: items[indexPath.item], isFolder: isFolder(items[indexPath.item]))
+        let url = items[indexPath.item]
+        libraryCell.configure(
+            with: url,
+            isFolder: isFolder(url),
+            metadata: metadataStore.metadata(for: url)
+        )
         return cell
     }
 
@@ -977,6 +1174,8 @@ final class LibraryCell: NSCollectionViewItem {
 
     private let thumbView = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
+    private let infoLabel = NSTextField(labelWithString: "")
+    private var representedURL: URL?
 
     override func loadView() {
         let root = NSView()
@@ -991,23 +1190,34 @@ final class LibraryCell: NSCollectionViewItem {
         nameLabel.alignment = .center
         nameLabel.lineBreakMode = .byTruncatingMiddle
         nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        infoLabel.font = .systemFont(ofSize: 9)
+        infoLabel.textColor = .secondaryLabelColor
+        infoLabel.alignment = .center
+        infoLabel.lineBreakMode = .byTruncatingMiddle
+        infoLabel.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(thumbView)
         root.addSubview(nameLabel)
+        root.addSubview(infoLabel)
         NSLayoutConstraint.activate([
             thumbView.topAnchor.constraint(equalTo: root.topAnchor, constant: 6),
             thumbView.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             thumbView.widthAnchor.constraint(equalToConstant: 96),
-            thumbView.heightAnchor.constraint(equalToConstant: 88),
+            thumbView.heightAnchor.constraint(equalToConstant: 86),
             nameLabel.topAnchor.constraint(equalTo: thumbView.bottomAnchor, constant: 4),
             nameLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 4),
             nameLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -4),
+            infoLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 2),
+            infoLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 3),
+            infoLabel.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -3),
         ])
         view = root
     }
 
-    func configure(with url: URL, isFolder: Bool) {
-        nameLabel.stringValue = url.lastPathComponent
+    func configure(with url: URL, isFolder: Bool, metadata: LibraryItemMetadata) {
+        representedURL = url
+        nameLabel.stringValue = (metadata.favorite ? "★ " : "") + url.lastPathComponent
+        infoLabel.stringValue = metadata.tags.isEmpty ? "" : metadata.tags.map { "#\($0)" }.joined(separator: " ")
         if isFolder {
             let icon = NSWorkspace.shared.icon(for: .folder)
             icon.size = NSSize(width: 84, height: 78)
@@ -1016,10 +1226,12 @@ final class LibraryCell: NSCollectionViewItem {
             thumbView.image = NSWorkspace.shared.icon(forFile: url.path)
             let itemURL = url
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let image = NSImage(contentsOf: itemURL) else { return }
+                let image = NSImage(contentsOf: itemURL)
+                let info = LibraryMediaInfo.load(from: itemURL)
                 DispatchQueue.main.async {
-                    guard self?.nameLabel.stringValue == itemURL.lastPathComponent else { return }
-                    self?.thumbView.image = image
+                    guard self?.representedURL == itemURL else { return }
+                    if let image { self?.thumbView.image = image }
+                    if let info { self?.infoLabel.stringValue = info.displayText }
                 }
             }
         }
