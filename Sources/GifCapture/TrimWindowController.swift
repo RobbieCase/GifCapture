@@ -22,6 +22,8 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     private var timeObserver: Any?
     private var previewTimer: Timer?
     private var previewDirection = 1
+    private var previewFrameIndex = 0
+    private var manualSeekInFlight = false
     private var finished = false
 
     private let slider = TrimRangeSlider()
@@ -111,13 +113,23 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             let seconds = time.seconds
             self.slider.playhead = seconds
             self.updateFrameLabel(time: seconds)
-            // Loop playback within the selected range, QuickTime-style.
-            if self.player.rate > 0, seconds >= self.slider.endTime {
-                self.player.seek(
-                    to: CMTime(seconds: self.slider.startTime, preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero
-                )
-                self.player.playImmediately(atRate: Float(self.selectedSpeed))
+            // Loop and direction changes stay inside the selected range.
+            if self.player.rate > 0, seconds >= self.slider.endTime - 0.001 {
+                if self.selectedLoopMode == .pingPong {
+                    self.startPlayback(direction: -1)
+                } else {
+                    self.seek(to: self.slider.startTime) { [weak self] in
+                        self?.startPlayback(direction: 1)
+                    }
+                }
+            } else if self.player.rate < 0, seconds <= self.slider.startTime + 0.001 {
+                if self.selectedLoopMode == .pingPong {
+                    self.startPlayback(direction: 1)
+                } else {
+                    self.seek(to: self.slider.endTime) { [weak self] in
+                        self?.startPlayback(direction: -1)
+                    }
+                }
             }
         }
     }
@@ -161,7 +173,11 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
         speedPopup.addItems(withTitles: ["0.5×", "0.75×", "1×", "1.5×", "2×"])
         speedPopup.selectItem(at: 2)
+        speedPopup.target = self
+        speedPopup.action = #selector(playbackSettingChanged)
         loopPopup.addItems(withTitles: EditorLoopMode.allCases.map(\.rawValue))
+        loopPopup.target = self
+        loopPopup.action = #selector(playbackSettingChanged)
         cropPopup.addItems(withTitles: EditorCropMode.allCases.map(\.rawValue))
         cropPopup.target = self
         cropPopup.action = #selector(cropChanged)
@@ -270,18 +286,16 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             pausePlayback()
             return
         }
-        if player.currentTime().seconds < slider.startTime || player.currentTime().seconds >= slider.endTime {
-            seek(to: selectedLoopMode == .reverse ? slider.endTime : slider.startTime)
+        let direction = selectedLoopMode == .reverse ? -1 : 1
+        let current = player.currentTime().seconds
+        let needsReposition = (direction < 0 && current <= slider.startTime + 0.001)
+            || current < slider.startTime || current >= slider.endTime
+        if needsReposition {
+            let destination = direction < 0 ? slider.endTime : slider.startTime
+            seek(to: destination) { [weak self] in self?.startPlayback(direction: direction) }
+        } else {
+            startPlayback(direction: direction)
         }
-        switch selectedLoopMode {
-        case .forward:
-            player.playImmediately(atRate: Float(selectedSpeed))
-        case .reverse:
-            startManualPlayback(direction: -1)
-        case .pingPong:
-            startManualPlayback(direction: 1)
-        }
-        playButton.title = "Pause"
     }
 
     @objc private func stepBackward() { step(by: -1) }
@@ -289,40 +303,89 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
 
     private func step(by frames: Int) {
         pausePlayback()
+        let target: Double
         if !frameTimes.isEmpty {
             let index = min(max(nearestFrameIndex(to: player.currentTime().seconds) + frames, 0), frameTimes.count - 1)
-            seek(to: frameTimes[index])
+            target = frameTimes[index]
         } else {
-            seek(to: player.currentTime().seconds + Double(frames) / frameRate)
+            target = player.currentTime().seconds + Double(frames) / frameRate
+        }
+        guard target >= slider.startTime, target <= slider.endTime else { return }
+        player.currentItem?.step(byCount: frames)
+        // AVPlayer updates currentTime asynchronously after native frame steps.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            guard let self else { return }
+            let actual = self.player.currentTime().seconds
+            if !actual.isFinite || abs(actual - target) > max(0.02, 1.5 / self.frameRate) {
+                self.seek(to: target)
+            } else {
+                self.slider.playhead = actual
+                self.updateFrameLabel(time: actual)
+            }
         }
     }
 
-    private func seek(to time: Double) {
-        let snapped = (time * frameRate).rounded() / frameRate
+    private func seek(to time: Double, completion: (() -> Void)? = nil) {
+        let snapped = frameTimes.min(by: { abs($0 - time) < abs($1 - time) })
+            ?? ((time * frameRate).rounded() / frameRate)
         let clamped = min(max(snapped, slider.startTime), slider.endTime)
+        player.pause()
         player.seek(
             to: CMTime(seconds: clamped, preferredTimescale: 60_000),
             toleranceBefore: .zero,
             toleranceAfter: .zero
-        )
+        ) { finished in
+            guard finished, let completion else { return }
+            DispatchQueue.main.async(execute: completion)
+        }
         slider.playhead = clamped
         updateFrameLabel(time: clamped)
     }
 
+    private func startPlayback(direction: Int) {
+        previewTimer?.invalidate()
+        previewTimer = nil
+        previewDirection = direction
+        if direction > 0 {
+            player.playImmediately(atRate: Float(selectedSpeed))
+        } else {
+            player.pause()
+            startManualPlayback(direction: -1)
+        }
+        playButton.title = "Pause"
+    }
+
     private func startManualPlayback(direction: Int) {
         previewDirection = direction
+        previewFrameIndex = nearestFrameIndex(to: player.currentTime().seconds)
+        manualSeekInFlight = false
         let timer = Timer(timeInterval: max(1 / 120, 1 / frameRate / selectedSpeed), repeats: true) { [weak self] _ in
             guard let self else { return }
-            var next = self.player.currentTime().seconds + Double(self.previewDirection) / self.frameRate
-            if next >= self.slider.endTime || next <= self.slider.startTime {
+            guard !self.frameTimes.isEmpty else {
+                self.seek(to: self.player.currentTime().seconds + Double(self.previewDirection) / self.frameRate)
+                return
+            }
+            guard !self.manualSeekInFlight else { return }
+            let firstIndex = self.frameTimes.firstIndex { $0 >= self.slider.startTime - 0.000_001 } ?? 0
+            let lastIndex = self.frameTimes.lastIndex { $0 < self.slider.endTime - 0.000_001 }
+                ?? self.frameTimes.count - 1
+            var nextIndex = self.previewFrameIndex + self.previewDirection
+            if nextIndex > lastIndex || nextIndex < firstIndex
+                || self.frameTimes[nextIndex] >= self.slider.endTime
+                || self.frameTimes[nextIndex] < self.slider.startTime {
                 if self.selectedLoopMode == .pingPong {
                     self.previewDirection *= -1
-                    next = min(max(next, self.slider.startTime), self.slider.endTime)
+                    nextIndex = self.previewFrameIndex + self.previewDirection
                 } else {
-                    next = self.previewDirection > 0 ? self.slider.startTime : self.slider.endTime
+                    nextIndex = self.previewDirection > 0 ? firstIndex : lastIndex
                 }
             }
-            self.seek(to: next)
+            guard self.frameTimes.indices.contains(nextIndex) else { return }
+            self.previewFrameIndex = nextIndex
+            self.manualSeekInFlight = true
+            self.seek(to: self.frameTimes[nextIndex]) { [weak self] in
+                self?.manualSeekInFlight = false
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         previewTimer = timer
@@ -332,6 +395,7 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
         player.pause()
         previewTimer?.invalidate()
         previewTimer = nil
+        manualSeekInFlight = false
         playButton.title = "Play"
     }
 
@@ -342,6 +406,12 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
     @objc private func cropChanged() {
         cropPreview.cropMode = selectedCropMode
         cropPreview.isHidden = selectedCropMode == .none
+    }
+
+    @objc private func playbackSettingChanged() {
+        let wasPlaying = player.rate != 0 || previewTimer != nil
+        pausePlayback()
+        if wasPlaying { togglePlayback() }
     }
 
     @objc private func saveTapped() {
@@ -363,7 +433,8 @@ final class TrimWindowController: NSWindowController, NSWindowDelegate {
             outputWidth: requestedWidth,
             speed: selectedSpeed,
             loopMode: selectedLoopMode,
-            frameTimes: frameTimes
+            frameTimes: frameTimes,
+            customCrop: cropPreview.normalizedCustomCrop
         )
 
         Task {
@@ -639,21 +710,82 @@ final class TrimRangeSlider: NSView {
     }
 }
 
-/// Non-interactive preview of the centered crop that will be exported.
+/// Preview for centered crop presets and an interactive custom crop rectangle.
 final class CropPreviewView: NSView {
-    var cropMode: EditorCropMode = .none { didSet { needsDisplay = true } }
+    var cropMode: EditorCropMode = .none {
+        didSet {
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+    private(set) var normalizedCustomCrop = CGRect(x: 0.1, y: 0.1, width: 0.8, height: 0.8)
+    private var dragAnchor: NSPoint?
+    private var draggedRect: NSRect?
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        cropMode == .custom ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard cropMode == .custom else { return }
+        let point = clamped(convert(event.locationInWindow, from: nil))
+        dragAnchor = point
+        draggedRect = NSRect(origin: point, size: .zero)
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let anchor = dragAnchor else { return }
+        let point = clamped(convert(event.locationInWindow, from: nil))
+        draggedRect = NSRect(
+            x: min(anchor.x, point.x),
+            y: min(anchor.y, point.y),
+            width: abs(point.x - anchor.x),
+            height: abs(point.y - anchor.y)
+        )
+        needsDisplay = true
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let rect = draggedRect else { return }
+        if rect.width >= 20, rect.height >= 20, bounds.width > 0, bounds.height > 0 {
+            normalizedCustomCrop = CGRect(
+                x: rect.minX / bounds.width,
+                y: rect.minY / bounds.height,
+                width: rect.width / bounds.width,
+                height: rect.height / bounds.height
+            )
+        }
+        dragAnchor = nil
+        draggedRect = nil
+        needsDisplay = true
+    }
+
+    override func resetCursorRects() {
+        if cropMode == .custom { addCursorRect(bounds, cursor: .crosshair) }
+    }
+
+    private func clamped(_ point: NSPoint) -> NSPoint {
+        NSPoint(x: min(max(point.x, 0), bounds.width), y: min(max(point.y, 0), bounds.height))
+    }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard let aspect = cropMode.aspectRatio else { return }
         let crop: NSRect
-        if bounds.width / bounds.height > aspect {
+        if cropMode == .custom {
+            crop = draggedRect ?? NSRect(
+                x: normalizedCustomCrop.minX * bounds.width,
+                y: normalizedCustomCrop.minY * bounds.height,
+                width: normalizedCustomCrop.width * bounds.width,
+                height: normalizedCustomCrop.height * bounds.height
+            )
+        } else if let aspect = cropMode.aspectRatio, bounds.width / bounds.height > aspect {
             let width = bounds.height * aspect
             crop = NSRect(x: bounds.midX - width / 2, y: 0, width: width, height: bounds.height)
-        } else {
+        } else if let aspect = cropMode.aspectRatio {
             let height = bounds.width / aspect
             crop = NSRect(x: 0, y: bounds.midY - height / 2, width: bounds.width, height: height)
+        } else {
+            return
         }
         let shade = NSBezierPath(rect: bounds)
         shade.appendRect(crop)

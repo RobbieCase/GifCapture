@@ -13,10 +13,11 @@ enum EditorCropMode: String, CaseIterable {
     case landscape = "Landscape (16:9)"
     case classic = "Classic (4:3)"
     case portrait = "Portrait (9:16)"
+    case custom = "Custom Crop"
 
     var aspectRatio: CGFloat? {
         switch self {
-        case .none: return nil
+        case .none, .custom: return nil
         case .square: return 1
         case .landscape: return 16 / 9
         case .classic: return 4 / 3
@@ -34,6 +35,7 @@ struct VideoEditOptions {
     var speed: Double
     var loopMode: EditorLoopMode
     var frameTimes: [Double]
+    var customCrop: CGRect?
 
     init(
         startTime: Double,
@@ -43,7 +45,8 @@ struct VideoEditOptions {
         outputWidth: Int?,
         speed: Double,
         loopMode: EditorLoopMode,
-        frameTimes: [Double] = []
+        frameTimes: [Double] = [],
+        customCrop: CGRect? = nil
     ) {
         self.startTime = startTime
         self.endTime = endTime
@@ -53,6 +56,7 @@ struct VideoEditOptions {
         self.speed = speed
         self.loopMode = loopMode
         self.frameTimes = frameTimes
+        self.customCrop = customCrop
     }
 
     var needsFrameExport: Bool {
@@ -128,7 +132,7 @@ enum VideoEditorExporter {
         ) else {
             throw editorError("Couldn't decode the first frame.")
         }
-        let crop = cropRect(for: firstImage, mode: options.cropMode)
+        let crop = cropRect(for: firstImage, mode: options.cropMode, customCrop: options.customCrop)
         let requestedWidth = options.outputWidth.map { max(2, $0) } ?? Int(crop.width)
         let outputWidth = requestedWidth & ~1
         let outputHeight = max(2, Int((CGFloat(outputWidth) * crop.height / crop.width).rounded()) & ~1)
@@ -172,6 +176,7 @@ enum VideoEditorExporter {
                       let buffer = makePixelBuffer(
                         image: image,
                         cropMode: options.cropMode,
+                        customCrop: options.customCrop,
                         width: outputWidth,
                         height: outputHeight,
                         pool: adaptor.pixelBufferPool
@@ -204,8 +209,20 @@ enum VideoEditorExporter {
         return outputURL
     }
 
-    private static func cropRect(for image: CGImage, mode: EditorCropMode) -> CGRect {
+    private static func cropRect(for image: CGImage, mode: EditorCropMode, customCrop: CGRect?) -> CGRect {
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        if mode == .custom, let normalized = customCrop {
+            let safe = normalized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            guard safe.width >= 0.01, safe.height >= 0.01 else { return bounds }
+            // AppKit's preview origin is bottom-left; CGImage crop coordinates
+            // address rows from the top.
+            return CGRect(
+                x: safe.minX * bounds.width,
+                y: (1 - safe.maxY) * bounds.height,
+                width: safe.width * bounds.width,
+                height: safe.height * bounds.height
+            ).integral.intersection(bounds)
+        }
         guard let aspect = mode.aspectRatio else { return bounds }
         let sourceAspect = bounds.width / bounds.height
         if sourceAspect > aspect {
@@ -219,13 +236,16 @@ enum VideoEditorExporter {
     private static func makePixelBuffer(
         image: CGImage,
         cropMode: EditorCropMode,
+        customCrop: CGRect?,
         width: Int,
         height: Int,
         pool: CVPixelBufferPool?
     ) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         if let pool { CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) }
-        guard let buffer, let cropped = image.cropping(to: cropRect(for: image, mode: cropMode)) else { return nil }
+        guard let buffer,
+              let cropped = image.cropping(to: cropRect(for: image, mode: cropMode, customCrop: customCrop))
+        else { return nil }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let context = CGContext(

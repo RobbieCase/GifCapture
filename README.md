@@ -84,8 +84,10 @@ Recording) — you may need to quit and relaunch the app after granting it.
    The controls themselves are excluded from the capture.
 5. Click **Stop** to open the editor. Trim on exact frame boundaries, play/pause,
    step one frame at a time, crop, resize, change playback speed, or export a
-   reverse/ping-pong loop. An optional target-size export iteratively compresses
-   the GIF below the requested file-size ceiling.
+   reverse/ping-pong loop. Speed, reverse, and ping-pong are previewed directly
+   in the editor. Crop includes common centered aspect ratios plus an interactive
+   Custom Crop rectangle drawn over the video. An optional target-size export
+   iteratively compresses the GIF below the requested file-size ceiling.
 6. The GIF is copied to the clipboard (configurable), a notification shows the
    file size, and the Library opens with it at the top of the grid. Right-click
    a GIF in the Library for the macOS **Share…** sheet.
