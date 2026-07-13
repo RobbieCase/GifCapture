@@ -30,18 +30,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let drawModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let clickIndicatorModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
 
+    private let sectionSelector = NSSegmentedControl(
+        labels: ["Capture", "Output", "Shortcuts"],
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
+    private let tabView = NSTabView()
     private let permissionStatusLabel = NSTextField(labelWithString: "Checking…")
-    private let permissionSeparator = NSBox()
     private let permissionSection = NSStackView()
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 680),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "GifCapture Settings"
+        window.title = "Settings"
         window.isReleasedWhenClosed = false
         self.init(window: window)
         window.delegate = self
@@ -101,11 +107,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         clickIndicatorModifierPopup.addItems(withTitles: modifierTitles)
 
         [startShortcutButton, libraryShortcutButton, stopShortcutButton].forEach {
-            $0.widthAnchor.constraint(equalToConstant: 150).isActive = true
+            $0.widthAnchor.constraint(equalToConstant: 180).isActive = true
         }
 
         let qualityRow = NSStackView(views: [qualitySlider, qualityValueLabel])
         qualityRow.orientation = .horizontal
+        qualityRow.spacing = 10
+        qualitySlider.widthAnchor.constraint(equalToConstant: 300).isActive = true
         qualityValueLabel.widthAnchor.constraint(equalToConstant: 32).isActive = true
 
         let outputGrid = NSGridView(views: [
@@ -113,37 +121,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             [label("Quality:"), qualityRow],
             [label("Frame rate:"), fpsPopup],
             [label("Output size:"), scalePopup],
-            [label("After saving:"), autoCopyCheckbox],
-            [label("Extras:"), exportMP4Checkbox],
         ])
-        configure(grid: outputGrid)
+        configureCardGrid(outputGrid)
+        encoderPopup.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        fpsPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        scalePopup.widthAnchor.constraint(equalToConstant: 300).isActive = true
+
+        let exportOptions = NSStackView(views: [autoCopyCheckbox, exportMP4Checkbox])
+        exportOptions.orientation = .vertical
+        exportOptions.alignment = .leading
+        exportOptions.spacing = 10
 
         var captureRows: [[NSView]] = [
             [label("Capture mode:"), captureModePopup],
             [label("Countdown:"), countdownCheckbox],
             [label("Cursor:"), cursorCheckbox],
-            [label("Click indicator:"), clickIndicatorPopup],
-            [label("Indicator color:"), clickIndicatorColorWell],
         ]
         if FeatureFlags.followWindow {
             captureRows.insert([label("Window mode:"), followWindowCheckbox], at: 1)
         }
         let captureGrid = NSGridView(views: captureRows)
-        configureLeftAligned(grid: captureGrid)
+        configureCardGrid(captureGrid)
+        captureModePopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
-        clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
-        clickIndicatorModifierPopup.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        clickIndicatorModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
         clickIndicatorModifierPopup.toolTip = "Modifier used by the third activation choice"
+
+        let clickFeedbackGrid = NSGridView(views: [
+            [label("Show indicator:"), clickIndicatorPopup],
+            [label("Color:"), clickIndicatorColorWell],
+        ])
+        configureCardGrid(clickFeedbackGrid)
 
         let shortcutGrid = NSGridView(views: [
             [label("Start recording:"), startShortcutButton],
             [label("Open Library:"), libraryShortcutButton],
+        ])
+        configureCardGrid(shortcutGrid)
+
+        let recordingShortcutGrid = NSGridView(views: [
             [label("Stop recording:"), stopShortcutButton],
             [label("Hold to zoom:"), zoomModifierPopup],
             [label("Hold to draw:"), drawModifierPopup],
             [label("Click indicator:"), clickIndicatorModifierPopup],
         ])
-        configureLeftAligned(grid: shortcutGrid)
+        configureCardGrid(recordingShortcutGrid)
+        zoomModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        drawModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
         permissionStatusLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let settingsButton = NSButton(title: "Open System Settings…", target: self, action: #selector(openScreenRecordingSettings))
@@ -152,35 +177,79 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionRow.orientation = .horizontal
         permissionRow.spacing = 14
 
-        permissionSeparator.boxType = .separator
-        permissionSeparator.widthAnchor.constraint(equalToConstant: 460).isActive = true
         permissionSection.setViews([
-            sectionTitle("Screen Recording Permission"),
+            sectionTitle("Screen Recording access is needed"),
             permissionRow,
-            hint("After granting access in System Settings, quit and reopen GifCapture once so macOS applies the permission."),
+            hint("Grant access, then quit and reopen GifCapture once so macOS applies the permission."),
         ], in: .top)
         permissionSection.orientation = .vertical
         permissionSection.alignment = .leading
-        permissionSection.spacing = 9
+        permissionSection.spacing = 8
+        permissionSection.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+        permissionSection.wantsLayer = true
+        permissionSection.layer?.cornerRadius = 10
+        permissionSection.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
+        permissionSection.widthAnchor.constraint(equalToConstant: 572).isActive = true
 
-        let stack = NSStackView(views: [
-            sectionTitle("Output"), outputGrid,
-            hint("Higher quality, frame rate, and 2× size increase the GIF's file size."),
-            separator(),
-            sectionTitle("Capture"), captureGrid,
-            hint(FeatureFlags.followWindow
-                ? "Drag Selection is the default. Window mode snaps to shadowless window bounds; experimental following stays on the selected display."
-                : "Drag Selection is the default. Window mode snaps to shadowless, edge-cropped window bounds."),
-            separator(),
-            sectionTitle("Key Bindings"), shortcutGrid,
-            hint("Stop Recording is active only while recording. The click modifier is available when modifier-click highlighting is selected above."),
-            permissionSeparator,
-            permissionSection,
+        let capturePage = page([
+            card(
+                title: "Capture area",
+                subtitle: "Drag selection is the default. Window mode captures clean, shadowless bounds.",
+                content: captureGrid
+            ),
+            card(
+                title: "Mouse clicks",
+                subtitle: "Optionally show a colored pulse around clicks in the recording.",
+                content: clickFeedbackGrid
+            ),
         ])
+
+        let outputPage = page([
+            card(
+                title: "GIF output",
+                subtitle: "Higher quality, frame rate, and scale create larger files.",
+                content: outputGrid
+            ),
+            card(
+                title: "After export",
+                subtitle: "Choose what GifCapture should do with each finished recording.",
+                content: exportOptions
+            ),
+        ])
+
+        let shortcutsPage = page([
+            card(
+                title: "Global shortcuts",
+                subtitle: "These work from any app while GifCapture is running.",
+                content: shortcutGrid
+            ),
+            card(
+                title: "While recording",
+                subtitle: "Stop is a shortcut; zoom, drawing, and click feedback activate while held.",
+                content: recordingShortcutGrid
+            ),
+        ])
+
+        tabView.tabViewType = .noTabsNoBorder
+        [capturePage, outputPage, shortcutsPage].enumerated().forEach { index, page in
+            let item = NSTabViewItem(identifier: index)
+            item.view = page
+            tabView.addTabViewItem(item)
+        }
+        tabView.widthAnchor.constraint(equalToConstant: 572).isActive = true
+        tabView.heightAnchor.constraint(equalToConstant: 360).isActive = true
+
+        sectionSelector.selectedSegment = 0
+        sectionSelector.segmentDistribution = .fillEqually
+        sectionSelector.target = self
+        sectionSelector.action = #selector(sectionChanged(_:))
+        sectionSelector.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
+        let stack = NSStackView(views: [sectionSelector, tabView, permissionSection])
         stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 9
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 20, bottom: 16, right: 20)
+        stack.alignment = .centerX
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: 18, left: 24, bottom: 20, right: 24)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -190,13 +259,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            outputGrid.widthAnchor.constraint(equalToConstant: 460),
-            captureGrid.widthAnchor.constraint(equalTo: outputGrid.widthAnchor),
-            shortcutGrid.widthAnchor.constraint(equalTo: outputGrid.widthAnchor),
         ])
         window?.contentView = content
         window?.setContentSize(content.fittingSize)
         syncControls()
+    }
+
+    @objc private func sectionChanged(_ sender: NSSegmentedControl) {
+        cancelShortcutCapture()
+        tabView.selectTabViewItem(at: sender.selectedSegment)
     }
 
     private func configureShortcutButtons() {
@@ -245,17 +316,53 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func configure(grid: NSGridView) {
-        grid.rowSpacing = 8
+    private func configureCardGrid(_ grid: NSGridView) {
+        grid.rowSpacing = 10
+        grid.columnSpacing = 14
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .leading
+        grid.column(at: 0).width = 128
     }
 
-    private func configureLeftAligned(grid: NSGridView) {
-        configure(grid: grid)
-        grid.columnSpacing = 8
-        grid.column(at: 0).width = 112
-        grid.column(at: 1).width = 340
+    private func page(_ cards: [NSView]) -> NSView {
+        let page = NSView()
+        let stack = NSStackView(views: cards)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        page.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: page.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: page.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: page.bottomAnchor),
+        ])
+        return page
+    }
+
+    private func card(title: String, subtitle: String, content: NSView) -> NSView {
+        let titleField = sectionTitle(title)
+        let subtitleField = hint(subtitle, width: 520)
+        let stack = NSStackView(views: [titleField, subtitleField, content])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.borderWidth = 1
+        box.cornerRadius = 10
+        box.borderColor = .separatorColor
+        box.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72)
+        box.contentViewMargins = NSSize(width: 16, height: 14)
+        box.contentView = stack
+        box.widthAnchor.constraint(equalToConstant: 572).isActive = true
+        // NSBox does not derive an intrinsic height from a replacement content view.
+        // Give each card the height its controls need so tab pages never collapse.
+        box.heightAnchor.constraint(equalToConstant: ceil(content.fittingSize.height) + 78).isActive = true
+        return box
     }
 
     private func label(_ text: String) -> NSTextField {
@@ -268,20 +375,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return field
     }
 
-    private func hint(_ text: String) -> NSTextField {
+    private func hint(_ text: String, width: CGFloat = 544) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = .systemFont(ofSize: 11)
         field.textColor = .secondaryLabelColor
         field.maximumNumberOfLines = 2
-        field.widthAnchor.constraint(equalToConstant: 460).isActive = true
+        field.widthAnchor.constraint(equalToConstant: width).isActive = true
         return field
-    }
-
-    private func separator() -> NSBox {
-        let box = NSBox()
-        box.boxType = .separator
-        box.widthAnchor.constraint(equalToConstant: 460).isActive = true
-        return box
     }
 
     private func syncControls() {
@@ -362,7 +462,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let shouldHide = granted
         guard permissionSection.isHidden != shouldHide else { return }
         permissionSection.isHidden = shouldHide
-        permissionSeparator.isHidden = shouldHide
         window?.contentView?.layoutSubtreeIfNeeded()
         if let size = window?.contentView?.fittingSize, size.width > 0, size.height > 0 {
             window?.setContentSize(size)
