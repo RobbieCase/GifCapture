@@ -1,13 +1,13 @@
 import AVFoundation
 import CoreGraphics
 
-enum EditorLoopMode: String, CaseIterable {
+enum EditorLoopMode: String, CaseIterable, Sendable {
     case forward = "Forward"
     case reverse = "Reverse"
     case pingPong = "Ping-Pong"
 }
 
-enum EditorCropMode: String, CaseIterable {
+enum EditorCropMode: String, CaseIterable, Sendable {
     case none = "No Crop"
     case square = "Square (1:1)"
     case landscape = "Landscape (16:9)"
@@ -26,7 +26,7 @@ enum EditorCropMode: String, CaseIterable {
     }
 }
 
-struct VideoEditOptions {
+struct VideoEditOptions: Sendable {
     var startTime: Double
     var endTime: Double
     var frameRate: Double
@@ -94,7 +94,7 @@ enum VideoEditorExporter {
     /// Builds an edited H.264 movie one source frame at a time. Generating by
     /// exact source timestamps makes reverse and ping-pong deterministic and
     /// keeps trim boundaries aligned to actual frames.
-    static func export(asset: AVAsset, options: VideoEditOptions) throws -> URL {
+    static func export(asset: AVAsset, options: VideoEditOptions) async throws -> URL {
         let frameRate = max(1, options.frameRate)
         let sourceFrameDuration = 1 / frameRate
         let timeline = options.frameTimes.isEmpty
@@ -125,13 +125,10 @@ enum VideoEditorExporter {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        var actual = CMTime.zero
-        guard let firstImage = try? generator.copyCGImage(
-            at: CMTime(seconds: timeline[frameIndexes[0]], preferredTimescale: 60_000),
-            actualTime: &actual
-        ) else {
-            throw editorError("Couldn't decode the first frame.")
-        }
+        let firstImage = try await image(
+            from: generator,
+            at: CMTime(seconds: timeline[frameIndexes[0]], preferredTimescale: 60_000)
+        )
         let crop = cropRect(for: firstImage, mode: options.cropMode, customCrop: options.customCrop)
         let requestedWidth = options.outputWidth.map { max(2, $0) } ?? Int(crop.width)
         let outputWidth = requestedWidth & ~1
@@ -168,27 +165,33 @@ enum VideoEditorExporter {
         }()
         var outputTime = 0.0
         for (outputIndex, sourceIndex) in frameIndexes.enumerated() {
-            try autoreleasepool {
-                while !input.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.002) }
-                var decodedTime = CMTime.zero
-                let sourceTime = CMTime(seconds: timeline[sourceIndex], preferredTimescale: 60_000)
-                guard let image = try? generator.copyCGImage(at: sourceTime, actualTime: &decodedTime),
-                      let buffer = makePixelBuffer(
-                        image: image,
-                        cropMode: options.cropMode,
-                        customCrop: options.customCrop,
-                        width: outputWidth,
-                        height: outputHeight,
-                        pool: adaptor.pixelBufferPool
-                      ) else { throw editorError("Couldn't decode frame \(sourceIndex).") }
-                guard adaptor.append(
-                    buffer,
-                    withPresentationTime: CMTime(
-                        seconds: outputTime,
-                        preferredTimescale: 60_000
-                    )
-                ) else { throw writer.error ?? editorError("Couldn't write frame \(outputIndex).") }
+            try Task.checkCancellation()
+            let readyDeadline = Date().addingTimeInterval(60)
+            while !input.isReadyForMoreMediaData {
+                try Task.checkCancellation()
+                guard writer.status != .failed && writer.status != .cancelled else {
+                    throw writer.error ?? editorError("The edited video writer stopped unexpectedly.")
+                }
+                guard Date() < readyDeadline else {
+                    writer.cancelWriting()
+                    throw editorError("Timed out waiting to write edited frame \(outputIndex).")
+                }
+                try await Task.sleep(nanoseconds: 2_000_000)
             }
+            let sourceTime = CMTime(seconds: timeline[sourceIndex], preferredTimescale: 60_000)
+            let decodedImage = try await image(from: generator, at: sourceTime)
+            guard let buffer = makePixelBuffer(
+                image: decodedImage,
+                cropMode: options.cropMode,
+                customCrop: options.customCrop,
+                width: outputWidth,
+                height: outputHeight,
+                pool: adaptor.pixelBufferPool
+            ) else { throw editorError("Couldn't decode frame \(sourceIndex).") }
+            guard adaptor.append(
+                buffer,
+                withPresentationTime: CMTime(seconds: outputTime, preferredTimescale: 60_000)
+            ) else { throw writer.error ?? editorError("Couldn't write frame \(outputIndex).") }
             let sourceDuration = sourceIndex + 1 < timeline.count
                 ? max(0.001, timeline[sourceIndex + 1] - timeline[sourceIndex])
                 : fallbackDuration
@@ -200,13 +203,32 @@ enum VideoEditorExporter {
             seconds: outputTime,
             preferredTimescale: 60_000
         ))
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
+        let finishBox = WriterFinishBox(writer: writer)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                finishBox.start(continuation)
+            }
+        } onCancel: {
+            finishBox.cancel()
+        }
         guard writer.status == .completed else {
             throw writer.error ?? editorError("Couldn't finish the edited video.")
         }
         return outputURL
+    }
+
+    private static func image(from generator: AVAssetImageGenerator, at time: CMTime) async throws -> CGImage {
+        if #available(macOS 15.0, *) {
+            return try await generator.image(at: time).image
+        } else {
+            return try legacyImage(from: generator, at: time)
+        }
+    }
+
+    @available(macOS, introduced: 10.7, obsoleted: 15.0)
+    private static func legacyImage(from generator: AVAssetImageGenerator, at time: CMTime) throws -> CGImage {
+        var actual = CMTime.zero
+        return try generator.copyCGImage(at: time, actualTime: &actual)
     }
 
     private static func cropRect(for image: CGImage, mode: EditorCropMode, customCrop: CGRect?) -> CGRect {
@@ -265,5 +287,62 @@ enum VideoEditorExporter {
 
     private static func editorError(_ message: String) -> NSError {
         NSError(domain: "GifCapture.Editor", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private final class WriterFinishBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private let writer: AVAssetWriter
+        private var continuation: CheckedContinuation<Void, Error>?
+        private var cancellationRequested = false
+
+        init(writer: AVAssetWriter) { self.writer = writer }
+
+        func start(_ continuation: CheckedContinuation<Void, Error>) {
+            let shouldCancel = lock.withLock { () -> Bool in
+                if cancellationRequested { return true }
+                self.continuation = continuation
+                return false
+            }
+            if shouldCancel {
+                writer.cancelWriting()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            writer.finishWriting { [self] in
+                if writer.status == .completed {
+                    complete(.success(()))
+                } else {
+                    complete(.failure(writer.error ?? editorError("Couldn't finish the edited video.")))
+                }
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60) { [self] in
+                guard takeContinuation() != nil else { return }
+                writer.cancelWriting()
+                continuation.resume(throwing: editorError("Timed out while finishing the edited video."))
+            }
+        }
+
+        func cancel() {
+            let continuation = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+                cancellationRequested = true
+                defer { self.continuation = nil }
+                return self.continuation
+            }
+            guard let continuation else { return }
+            writer.cancelWriting()
+            continuation.resume(throwing: CancellationError())
+        }
+
+        private func complete(_ result: Result<Void, Error>) {
+            guard let continuation = takeContinuation() else { return }
+            continuation.resume(with: result)
+        }
+
+        private func takeContinuation() -> CheckedContinuation<Void, Error>? {
+            lock.withLock {
+                defer { continuation = nil }
+                return continuation
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@ enum GifConverterError: LocalizedError {
     case toolNotFound(String)
     case processFailed(String, String)
     case targetSizeNotReached(actual: Int, target: Int)
+    case outputAlreadyExists(String)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ enum GifConverterError: LocalizedError {
             let formatter = ByteCountFormatter()
             formatter.countStyle = .file
             return "The smallest export was \(formatter.string(fromByteCount: Int64(actual))), above the \(formatter.string(fromByteCount: Int64(target))) target. Try a shorter trim or smaller dimensions."
+        case .outputAlreadyExists(let name):
+            return "An export named \(name) already exists. Please try again."
         }
     }
 }
@@ -40,9 +43,22 @@ enum GifConverter {
     /// Timestamped destination in the library root; callers that also produce
     /// sibling files (e.g. an MP4 copy) need the URL before conversion runs.
     static func makeDefaultOutputURL() -> URL {
+        uniqueOutputURL(in: outputDirectory, at: Date())
+    }
+
+    static func uniqueOutputURL(in directory: URL, at date: Date) -> URL {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        return outputDirectory.appendingPathComponent("GifCapture \(formatter.string(from: Date())).gif")
+        let base = "GifCapture \(formatter.string(from: date))"
+        var candidate = directory.appendingPathComponent(base).appendingPathExtension("gif")
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = directory
+                .appendingPathComponent("\(base) \(suffix)")
+                .appendingPathExtension("gif")
+            suffix += 1
+        }
+        return candidate
     }
 
     static let outputDirectory: URL = {
@@ -61,16 +77,24 @@ enum GifConverter {
         outputWidth: GifOutputWidth,
         outputURL explicitOutput: URL? = nil,
         targetBytes: Int? = nil
-    ) throws -> URL {
+    ) async throws -> URL {
         let baseSettings = AppSettings.load()
         let baseWidth = outputWidth.pixels(using: baseSettings)
 
         let outputURL = explicitOutput ?? makeDefaultOutputURL()
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
 
-        defer { try? FileManager.default.removeItem(at: videoURL) }
+        let temporaryOutput = outputURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(outputURL.deletingPathExtension().lastPathComponent).\(UUID().uuidString).partial")
+            .appendingPathExtension(outputURL.pathExtension)
+        defer { try? FileManager.default.removeItem(at: temporaryOutput) }
 
         guard let targetBytes, targetBytes > 0 else {
-            try encode(videoURL: videoURL, outputURL: outputURL, width: baseWidth, settings: baseSettings)
+            try await encode(videoURL: videoURL, outputURL: temporaryOutput, width: baseWidth, settings: baseSettings)
+            try commit(temporaryOutput, to: outputURL)
             return outputURL
         }
 
@@ -91,10 +115,14 @@ enum GifConverter {
             settings.quality = max(20, Int((Double(baseSettings.quality) * pass.quality).rounded()))
             settings.fps = max(6, Int((Double(baseSettings.fps) * pass.fps).rounded()))
             let width = max(160, Int((Double(baseWidth) * pass.width).rounded()))
-            try? FileManager.default.removeItem(at: outputURL)
-            try encode(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
-            finalBytes = (try? outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
-            if finalBytes <= targetBytes { return outputURL }
+            try Task.checkCancellation()
+            try? FileManager.default.removeItem(at: temporaryOutput)
+            try await encode(videoURL: videoURL, outputURL: temporaryOutput, width: width, settings: settings)
+            finalBytes = (try? temporaryOutput.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+            if finalBytes <= targetBytes {
+                try commit(temporaryOutput, to: outputURL)
+                return outputURL
+            }
         }
         throw GifConverterError.targetSizeNotReached(actual: finalBytes, target: targetBytes)
     }
@@ -104,18 +132,18 @@ enum GifConverter {
         outputURL: URL,
         width: Int,
         settings: AppSettings
-    ) throws {
+    ) async throws {
         switch settings.encoder {
         case .gifski:
-            try runGifski(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
+            try await runGifski(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
         case .ffmpeg:
-            try runFFmpeg(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
+            try await runFFmpeg(videoURL: videoURL, outputURL: outputURL, width: width, settings: settings)
         }
     }
 
-    private static func runGifski(videoURL: URL, outputURL: URL, width: Int, settings: AppSettings) throws {
+    private static func runGifski(videoURL: URL, outputURL: URL, width: Int, settings: AppSettings) async throws {
         guard let path = locate("gifski") else { throw GifConverterError.toolNotFound("gifski") }
-        try run(tool: "gifski", path: path, arguments: [
+        try await run(tool: "gifski", path: path, arguments: [
             "-o", outputURL.path,
             "--fps", String(settings.fps),
             "--quality", String(settings.quality),
@@ -124,36 +152,131 @@ enum GifConverter {
         ])
     }
 
-    private static func runFFmpeg(videoURL: URL, outputURL: URL, width: Int, settings: AppSettings) throws {
+    private static func runFFmpeg(videoURL: URL, outputURL: URL, width: Int, settings: AppSettings) async throws {
         guard let path = locate("ffmpeg") else { throw GifConverterError.toolNotFound("ffmpeg") }
         // ffmpeg has no single quality knob for GIFs; map quality onto palette size.
         let colors = min(256, max(16, settings.quality * 256 / 100))
         let filter = "fps=\(settings.fps),scale=\(width):-1:flags=lanczos,"
             + "split[s0][s1];[s0]palettegen=max_colors=\(colors)[p];"
             + "[s1][p]paletteuse=dither=sierra2_4a"
-        try run(tool: "ffmpeg", path: path, arguments: [
+        try await run(tool: "ffmpeg", path: path, arguments: [
             "-y", "-i", videoURL.path,
             "-vf", filter,
             outputURL.path,
         ])
     }
 
-    private static func run(tool: String, path: String, arguments: [String]) throws {
+    private static func run(tool: String, path: String, arguments: [String]) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
 
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
-        process.standardOutput = Pipe()
+        process.standardOutput = FileHandle.nullDevice
 
-        try process.run()
-        process.waitUntilExit()
+        let errorData = LockedData()
+        let processState = ProcessState(process)
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            errorData.append(handle.availableData)
+        }
+        defer { stderrPipe.fileHandleForReading.readabilityHandler = nil }
 
-        guard process.terminationStatus == 0 else {
-            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let message = String(data: data, encoding: .utf8) ?? "unknown error"
-            throw GifConverterError.processFailed(tool, String(message.suffix(500)))
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                process.terminationHandler = { process in
+                    if process.terminationStatus == 0 {
+                        continuation.resume()
+                    } else if processState.reason == .cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else if processState.reason == .timedOut {
+                        continuation.resume(throwing: GifConverterError.processFailed(
+                            tool, "Timed out after 10 minutes."
+                        ))
+                    } else {
+                        continuation.resume(throwing: GifConverterError.processFailed(
+                            tool,
+                            String(data: errorData.value.suffix(2_000), encoding: .utf8) ?? "unknown error"
+                        ))
+                    }
+                }
+                do {
+                    if processState.reason == .cancelled { throw CancellationError() }
+                    try process.run()
+                    processState.terminateIfRequested()
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 600) {
+                        processState.timeOut()
+                    }
+                }
+                catch { continuation.resume(throwing: error) }
+            }
+        } onCancel: {
+            processState.cancel()
+        }
+    }
+
+    static func commit(_ temporaryURL: URL, to outputURL: URL) throws {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: outputURL.path) else {
+            throw GifConverterError.outputAlreadyExists(outputURL.lastPathComponent)
+        }
+        let bytes = (try? temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard bytes > 0 else {
+            throw GifConverterError.processFailed("encoder", "The encoder produced an empty file.")
+        }
+        do {
+            try fm.moveItem(at: temporaryURL, to: outputURL)
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            throw GifConverterError.outputAlreadyExists(outputURL.lastPathComponent)
+        }
+    }
+
+    private final class LockedData: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage = Data()
+
+        func append(_ data: Data) {
+            guard !data.isEmpty else { return }
+            lock.withLock {
+                storage.append(data)
+                if storage.count > 8_192 { storage.removeFirst(storage.count - 8_192) }
+            }
+        }
+
+        var value: Data { lock.withLock { storage } }
+    }
+
+    private final class ProcessState: @unchecked Sendable {
+        enum StopReason: Equatable { case none, cancelled, timedOut }
+        private let lock = NSLock()
+        private let process: Process
+        private var stopReason: StopReason = .none
+
+        init(_ process: Process) { self.process = process }
+
+        var reason: StopReason { lock.withLock { stopReason } }
+
+        func cancel() {
+            let shouldTerminate = lock.withLock { () -> Bool in
+                guard stopReason == .none else { return false }
+                stopReason = .cancelled
+                return process.isRunning
+            }
+            if shouldTerminate { process.terminate() }
+        }
+
+        func timeOut() {
+            let shouldTerminate = lock.withLock { () -> Bool in
+                guard stopReason == .none, process.isRunning else { return false }
+                stopReason = .timedOut
+                return true
+            }
+            if shouldTerminate { process.terminate() }
+        }
+
+        func terminateIfRequested() {
+            if reason != .none, process.isRunning { process.terminate() }
         }
     }
 

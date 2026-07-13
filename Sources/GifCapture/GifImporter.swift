@@ -14,8 +14,8 @@ enum GifImporter {
         }
 
         let frameCount = CGImageSourceGetCount(source)
-        let width = firstFrame.width & ~1  // H.264 requires even dimensions
-        let height = firstFrame.height & ~1
+        let width = max(2, firstFrame.width & ~1)  // H.264 requires even dimensions
+        let height = max(2, firstFrame.height & ~1)
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -36,18 +36,33 @@ enum GifImporter {
                 kCVPixelBufferHeightKey as String: height,
             ]
         )
+        guard writer.canAdd(input) else { throw importError("Couldn't configure the GIF importer.") }
         writer.add(input)
-        writer.startWriting()
+        guard writer.startWriting() else {
+            throw writer.error ?? importError("Couldn't start converting the GIF.")
+        }
         writer.startSession(atSourceTime: .zero)
 
         var time = 0.0
         for index in 0..<frameCount {
+            try Task.checkCancellation()
             guard let frame = CGImageSourceCreateImageAtIndex(source, index, nil) else { continue }
+            let readyDeadline = Date().addingTimeInterval(60)
             while !input.isReadyForMoreMediaData {
+                try Task.checkCancellation()
+                guard writer.status != .failed && writer.status != .cancelled else {
+                    throw writer.error ?? importError("The GIF importer stopped unexpectedly.")
+                }
+                guard Date() < readyDeadline else {
+                    writer.cancelWriting()
+                    throw importError("Timed out waiting to write GIF frame \(index).")
+                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
             if let buffer = pixelBuffer(from: frame, width: width, height: height, pool: adaptor.pixelBufferPool) {
-                adaptor.append(buffer, withPresentationTime: CMTime(seconds: time, preferredTimescale: 600))
+                guard adaptor.append(buffer, withPresentationTime: CMTime(seconds: time, preferredTimescale: 600)) else {
+                    throw writer.error ?? importError("Couldn't write GIF frame \(index).")
+                }
             }
             time += frameDelay(source: source, index: index)
         }
@@ -56,13 +71,21 @@ enum GifImporter {
 
         let semaphore = DispatchSemaphore(value: 0)
         writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
+        guard semaphore.wait(timeout: .now() + 60) == .success else {
+            writer.cancelWriting()
+            throw importError("Timed out while finishing the imported GIF.")
+        }
 
         guard writer.status == .completed else {
             throw writer.error ?? NSError(domain: "GifCapture", code: 21,
                                           userInfo: [NSLocalizedDescriptionKey: "Couldn't convert the GIF to video."])
         }
         return (outputURL, width)
+    }
+
+    private static func importError(_ message: String) -> NSError {
+        NSError(domain: "GifCapture.Importer", code: 20,
+                userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     private static func frameDelay(source: CGImageSource, index: Int) -> Double {

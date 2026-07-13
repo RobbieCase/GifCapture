@@ -158,10 +158,12 @@ struct AppSettings {
             } ?? .option
         }
 
+        let storedQuality = d.object(forKey: "quality") as? Int ?? 90
+        let storedFPS = d.object(forKey: "fps") as? Int ?? 15
         return AppSettings(
             encoder: GifEncoder(rawValue: d.string(forKey: "encoder") ?? "") ?? .gifski,
-            quality: d.object(forKey: "quality") as? Int ?? 90,
-            fps: d.object(forKey: "fps") as? Int ?? 15,
+            quality: min(100, max(1, storedQuality)),
+            fps: fpsChoices.contains(storedFPS) ? storedFPS : 15,
             scale: OutputScale(rawValue: d.integer(forKey: "scale")) ?? .standard,
             autoCopyToClipboard: d.object(forKey: "autoCopyToClipboard") as? Bool ?? true,
             exportMP4: d.bool(forKey: "exportMP4"),

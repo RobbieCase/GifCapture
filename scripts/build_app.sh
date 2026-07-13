@@ -12,25 +12,33 @@ cd "$(dirname "$0")/.."
 
 APP_NAME="GifCapture"
 BUNDLE_ID="com.robbiecase.gifcapture"
-VERSION="0.7.0"
-BUILD_NUMBER="700"
+VERSION="0.7.1"
+BUILD_NUMBER="701"
 BUILD_DIR=".build/release"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 MODULE_CACHE_DIR=".build/module-cache"
+ARCHITECTURES=(arm64 x86_64)
 
 # A stale module cache miscompiles against framework internals (v0.6.0 shipped
 # a binary that bus-errored inside SwiftUI-backed controls); always start fresh.
 rm -rf "$MODULE_CACHE_DIR"
 mkdir -p "$BUILD_DIR" "$MODULE_CACHE_DIR"
 
-echo "Compiling..."
-swiftc -O \
-  Sources/GifCapture/*.swift \
-  -sdk "$SDK_PATH" \
-  -module-cache-path "$MODULE_CACHE_DIR" \
-  -o "$BUILD_DIR/$APP_NAME" \
-  -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz -framework Carbon -framework UserNotifications
+echo "Compiling universal macOS 13 binary..."
+THIN_BINARIES=()
+for ARCH in "${ARCHITECTURES[@]}"; do
+  THIN_BINARY="$BUILD_DIR/$APP_NAME-$ARCH"
+  swiftc -O \
+    Sources/GifCapture/*.swift \
+    -sdk "$SDK_PATH" \
+    -target "$ARCH-apple-macosx13.0" \
+    -module-cache-path "$MODULE_CACHE_DIR/$ARCH" \
+    -o "$THIN_BINARY" \
+    -framework AppKit -framework AVFoundation -framework AVKit -framework ScreenCaptureKit -framework CoreGraphics -framework Quartz -framework Carbon -framework UserNotifications
+  THIN_BINARIES+=("$THIN_BINARY")
+done
+lipo -create "${THIN_BINARIES[@]}" -output "$BUILD_DIR/$APP_NAME"
 
 echo "Assembling app bundle..."
 rm -rf "$APP_DIR"
@@ -144,6 +152,7 @@ ditto --noextattr --noacl --norsrc "$DIST_SIGN_APP" "$DIST_DIR/$APP_NAME.app"
 # Zip without extended attributes — macOS re-tags signed files with provenance
 # xattrs that read as "detritus" and break signature verification on other Macs.
 ditto --noextattr --noacl --norsrc -c -k --keepParent "$DIST_SIGN_APP" "$DIST_DIR/$APP_NAME.zip"
+(cd "$DIST_DIR" && shasum -a 256 "$APP_NAME.zip" > "$APP_NAME.zip.sha256")
 echo "Distribution zip (ad-hoc signed, for releases): $DIST_DIR/$APP_NAME.zip"
 
 echo "Built $APP_DIR"

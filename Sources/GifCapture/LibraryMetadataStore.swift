@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ImageIO
 
@@ -38,6 +39,48 @@ struct LibraryMediaInfo {
     }
 }
 
+final class LibraryPreview: NSObject, @unchecked Sendable {
+    let image: NSImage?
+    let info: LibraryMediaInfo?
+
+    init(image: NSImage?, info: LibraryMediaInfo?) {
+        self.image = image
+        self.info = info
+    }
+
+    static func load(from url: URL) -> LibraryPreview {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            return LibraryPreview(image: nil, info: nil)
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 256,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary)
+            .map { NSImage(cgImage: $0, size: .zero) }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            return LibraryPreview(image: image, info: nil)
+        }
+        let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
+        let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+        var duration = 0.0
+        for index in 0..<CGImageSourceGetCount(source) {
+            guard let frame = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+                  let gif = frame[kCGImagePropertyGIFDictionary] as? [CFString: Any] else { continue }
+            duration += (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+                ?? (gif[kCGImagePropertyGIFDelayTime] as? Double)
+                ?? 0.1
+        }
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return LibraryPreview(
+            image: image,
+            info: LibraryMediaInfo(duration: duration, width: width, height: height, bytes: bytes)
+        )
+    }
+}
+
+@MainActor
 final class LibraryMetadataStore {
     static let shared = LibraryMetadataStore()
 

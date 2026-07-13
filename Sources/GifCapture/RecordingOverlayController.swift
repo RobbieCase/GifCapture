@@ -7,6 +7,7 @@ import AppKit
 /// old sticky Pen button. The dim layer and panels are excluded from the screen
 /// capture (see `captureExcludedWindowIDs`); the pen drawing window
 /// intentionally is NOT, so ink shows up in the GIF.
+@MainActor
 final class RecordingOverlayController: NSObject {
     private var dimWindow: NSWindow?
     private weak var dimView: RecordingDimView?
@@ -130,8 +131,13 @@ final class RecordingOverlayController: NSObject {
     }
 
     /// Timers added to .common so they keep firing during mouse-drag tracking.
-    private func scheduled(_ interval: TimeInterval, _ block: @escaping () -> Void) -> Timer {
-        let t = Timer(timeInterval: interval, repeats: true) { _ in block() }
+    private func scheduled(
+        _ interval: TimeInterval,
+        _ block: @escaping @MainActor @Sendable () -> Void
+    ) -> Timer {
+        let t = Timer(timeInterval: interval, repeats: true) { _ in
+            Task { @MainActor in block() }
+        }
         RunLoop.main.add(t, forMode: .common)
         return t
     }
@@ -797,21 +803,24 @@ final class PenDrawingView: NSView {
     private func ensureFadeTimer() {
         guard fadeTimer == nil else { return }
         let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let now = Date()
-            self.strokes.removeAll { stroke in
-                guard let finished = stroke.finishedAt, stroke.fadeAfter.isFinite else { return false }
-                return now.timeIntervalSince(finished) > stroke.fadeAfter + self.fadeSeconds
-            }
-            self.clickPulses.removeAll { now.timeIntervalSince($0.startedAt) > 0.6 }
-            if self.strokes.isEmpty && self.clickPulses.isEmpty {
-                self.fadeTimer?.invalidate()
-                self.fadeTimer = nil
-            }
-            self.needsDisplay = true
+            Task { @MainActor in self?.updateFadeState() }
         }
         RunLoop.main.add(t, forMode: .common)
         fadeTimer = t
+    }
+
+    private func updateFadeState() {
+        let now = Date()
+        strokes.removeAll { stroke in
+            guard let finished = stroke.finishedAt, stroke.fadeAfter.isFinite else { return false }
+            return now.timeIntervalSince(finished) > stroke.fadeAfter + fadeSeconds
+        }
+        clickPulses.removeAll { now.timeIntervalSince($0.startedAt) > 0.6 }
+        if strokes.isEmpty && clickPulses.isEmpty {
+            fadeTimer?.invalidate()
+            fadeTimer = nil
+        }
+        needsDisplay = true
     }
 
     override func resetCursorRects() {

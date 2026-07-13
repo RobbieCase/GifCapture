@@ -3,11 +3,20 @@ import CoreGraphics
 import ScreenCaptureKit
 import UserNotifications
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private enum RecordingPhase {
+        case idle
+        case starting
+        case recording
+        case stopping
+    }
+
     private var statusItem: NSStatusItem!
     private var selectionController: SelectionOverlayController?
     private var countdownController: CountdownOverlayController?
     private var recorder: ScreenRecorder?
+    private var recordingPhase: RecordingPhase = .idle
     private var recordingOverlay: RecordingOverlayController?
     private var settingsController: SettingsWindowController?
     private var trimController: TrimWindowController?
@@ -103,7 +112,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startSelection() {
-        guard recorder == nil, selectionController == nil, countdownController == nil else { return }
+        guard recordingPhase == .idle,
+              recorder == nil, selectionController == nil, countdownController == nil else { return }
         let captureMode = AppSettings.load().captureMode
         selectionController = SelectionOverlayController(captureMode: captureMode) { [weak self] result in
             self?.selectionController = nil
@@ -139,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let result = refreshedWindowSelection(result)
         let recorder = ScreenRecorder()
         self.recorder = recorder
+        recordingPhase = .starting
         lastSelectionPointWidth = Int(result.rect.width)
 
         let overlay = RecordingOverlayController(screen: result.screen, topLeftRect: result.rect) { [weak self] in
@@ -165,18 +176,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     showsCursor: settings.showCursor,
                     followsWindow: shouldFollow
                 )
-                if shouldFollow {
-                    await MainActor.run {
+                let stopWasRequested = await MainActor.run { () -> Bool in
+                    guard self.recorder === recorder else { return true }
+                    if self.recordingPhase == .stopping { return true }
+                    self.recordingPhase = .recording
+                    if shouldFollow {
                         self.startFollowingWindow(result: result, recorder: recorder, overlay: overlay)
                     }
+                    return false
+                }
+                if stopWasRequested {
+                    await self.finishRecording(recorder)
                 }
             } catch {
                 await MainActor.run {
+                    guard self.recorder === recorder else { return }
                     self.stopFollowingWindow()
-                    self.showError("Couldn't start recording", error)
+                    if self.recordingPhase != .stopping {
+                        self.showError("Couldn't start recording", error)
+                    }
                     self.recordingOverlay?.close()
                     self.recordingOverlay = nil
                     self.recorder = nil
+                    self.recordingPhase = .idle
                     self.rebuildMenu()
                     self.configureGlobalShortcuts(showErrors: false)
                 }
@@ -186,26 +208,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopRecording() {
         guard let recorder else { return }
+        let shouldStopNow: Bool
+        switch recordingPhase {
+        case .starting:
+            // Startup is asynchronous. Mark the request and let the startup task
+            // stop the stream immediately after ScreenCaptureKit finishes opening it.
+            recordingPhase = .stopping
+            shouldStopNow = false
+        case .recording:
+            recordingPhase = .stopping
+            shouldStopNow = true
+        case .stopping, .idle:
+            return
+        }
         stopFollowingWindow()
         recordingOverlay?.close()
         recordingOverlay = nil
         rebuildMenu()
         configureGlobalShortcuts(showErrors: false)
 
-        Task {
-            do {
-                let videoURL = try await recorder.stop()
+        if shouldStopNow {
+            Task { await self.finishRecording(recorder) }
+        }
+    }
+
+    private func finishRecording(_ recorder: ScreenRecorder) async {
+        do {
+            let videoURL = try await recorder.stop()
+            await MainActor.run {
+                guard self.recorder === recorder else { return }
                 self.recorder = nil
-                await MainActor.run {
-                    self.rebuildMenu()
-                    self.presentTrimWindow(videoURL: videoURL)
-                }
-            } catch {
+                self.recordingPhase = .idle
+                self.rebuildMenu()
+                self.presentTrimWindow(videoURL: videoURL)
+            }
+        } catch {
+            await MainActor.run {
+                guard self.recorder === recorder else { return }
                 self.recorder = nil
-                await MainActor.run {
-                    self.rebuildMenu()
-                    self.showError("Couldn't finish recording", error)
-                }
+                self.recordingPhase = .idle
+                self.rebuildMenu()
+                self.showError("Couldn't finish recording", error)
             }
         }
     }
@@ -235,18 +278,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let windowID = result.windowID else { return }
         followLastRect = result.rect
         let fixedSize = result.rect.size
+        let displayID = result.display.displayID
 
         let refreshRate = min(120, max(60, result.screen.maximumFramesPerSecond))
         let timer = Timer(timeInterval: 1.0 / Double(refreshRate), repeats: true) { [weak self, weak recorder, weak overlay] _ in
-            guard let self, let recorder, let overlay,
-                  let rect = WindowCaptureGeometry.displayRelativeRect(
-                      for: windowID,
-                      displayID: result.display.displayID,
-                      fixedSize: fixedSize
-                  ), rect != self.followLastRect else { return }
-            recorder.setFollowCaptureRect(rect)
-            overlay.updateCaptureRect(rect)
-            self.followLastRect = rect
+            Task { @MainActor in
+                guard let self, let recorder, let overlay,
+                      let rect = WindowCaptureGeometry.displayRelativeRect(
+                          for: windowID,
+                          displayID: displayID,
+                          fixedSize: fixedSize
+                      ), rect != self.followLastRect else { return }
+                recorder.setFollowCaptureRect(rect)
+                overlay.updateCaptureRect(rect)
+                self.followLastRect = rect
+            }
         }
         timer.tolerance = 0.001
         RunLoop.main.add(timer, forMode: .common)
@@ -377,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Notification click -> reveal in Finder
 
-extension AppDelegate: UNUserNotificationCenterDelegate {
+extension AppDelegate: @preconcurrency UNUserNotificationCenterDelegate {
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,

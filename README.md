@@ -141,9 +141,10 @@ are built in. Grid thumbnails show duration, pixel dimensions, and file size, an
 the Library remembers its window frame and view mode.
 
 GifCapture checks GitHub Releases for updates shortly after launch. You can also
-run a manual check from **Check for Updates…**. On a locally signed development
-build, that command offers to replace the test build with the latest public
-GitHub release.
+run a manual check from **Check for Updates…**. Because public builds are ad-hoc
+signed, the app opens the authenticated GitHub release page instead of replacing
+its own executable. Release ZIPs include a SHA-256 checksum, which the installer
+verifies before extraction.
 
 ## Project layout
 
@@ -168,3 +169,12 @@ scripts/build_app.sh            compiles + assembles + ad-hoc signs the .app
 - Only single-display selection is supported (the drag must start and end on the same screen).
 - No audio capture (GIFs don't support audio anyway).
 - Ad-hoc signed, not notarized — fine for local personal use, not for distribution.
+
+## Tests
+
+Regression tests cover transactional output commits, collision-free filenames,
+letterboxed crop geometry, and recorder state errors:
+
+```
+swift test
+```

@@ -1,5 +1,5 @@
 import AppKit
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// Posts a "GIF saved" notification with the filename and file size.
 /// Clicking the notification reveals the file (handled by AppDelegate's
@@ -28,7 +28,7 @@ enum CaptureNotifier {
             content.body = body
             content.userInfo = [revealPathKey: gifURL.path]
 
-            center.add(UNNotificationRequest(
+            UNUserNotificationCenter.current().add(UNNotificationRequest(
                 identifier: UUID().uuidString,
                 content: content,
                 trigger: nil

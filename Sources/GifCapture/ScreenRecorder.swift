@@ -3,11 +3,21 @@ import AVFoundation
 import CoreImage
 import ScreenCaptureKit
 
-final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
-    private(set) var isRecording = false
+final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var _isRecording = false
+    private var acceptsFrames = false
+    private var _zoomActive = false
+    private var terminalError: Error?
+    private let outputQueue = DispatchQueue(label: "gifcapture.stream.output")
+
+    var isRecording: Bool { stateLock.withLock { _isRecording } }
 
     /// Toggled from the main thread while recording; read per-frame on the capture queue.
-    var zoomActive = false
+    var zoomActive: Bool {
+        get { stateLock.withLock { _zoomActive } }
+        set { stateLock.withLock { _zoomActive = newValue } }
+    }
     private var currentZoom: CGFloat = 1.0
     private var captureRect: CGRect = .zero      // top-left origin, points, display-relative
     private var displayBounds: CGRect = .zero    // CG global coords (top-left origin)
@@ -37,8 +47,8 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         followsWindow: Bool = false
     ) async throws {
         let scale = matchingScreen(for: display)?.backingScaleFactor ?? 2
-        let pixelWidth = max(2, Int((rect.width * scale).rounded()))
-        let pixelHeight = max(2, Int((rect.height * scale).rounded()))
+        let pixelWidth = max(2, Int((rect.width * scale).rounded())) & ~1
+        let pixelHeight = max(2, Int((rect.height * scale).rounded())) & ~1
 
         captureRect = rect
         displayBounds = CGDisplayBounds(display.displayID)
@@ -50,6 +60,11 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         currentZoom = 1.0
         zoomActive = false
+        stateLock.withLock {
+            terminalError = nil
+            _isRecording = false
+            acceptsFrames = false
+        }
 
         let content = try await SCShareableContent.current
         let excludedWindows = content.windows.filter { excludingWindowIDs.contains($0.windowID) }
@@ -92,6 +107,11 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
                 kCVPixelBufferHeightKey as String: pixelHeight
             ]
         )
+        guard writer.canAdd(input) else {
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: outputURL)
+            throw recorderError("Couldn't configure the recording writer.")
+        }
         writer.add(input)
 
         assetWriter = writer
@@ -100,10 +120,22 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         sessionStarted = false
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "gifcapture.stream.output"))
-        self.stream = stream
-        try await stream.startCapture()
-        isRecording = true
+        do {
+            try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: outputQueue)
+            self.stream = stream
+            stateLock.withLock { acceptsFrames = true }
+            try await stream.startCapture()
+            stateLock.withLock { _isRecording = true }
+        } catch {
+            stateLock.withLock {
+                _isRecording = false
+                acceptsFrames = false
+            }
+            self.stream = nil
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
     }
 
     /// Updates the crop used by follow-window mode. This is deliberately local
@@ -121,15 +153,34 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let stream else {
             throw NSError(domain: "GifCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not recording"])
         }
-        isRecording = false
-        try? await stream.stopCapture()
+        stateLock.withLock {
+            _isRecording = false
+            acceptsFrames = false
+        }
+        do {
+            try await stream.stopCapture()
+        } catch {
+            recordTerminalError(error)
+        }
         self.stream = nil
+        outputQueue.sync {}
+
+        if let error = stateLock.withLock({ terminalError }) {
+            assetWriter?.cancelWriting()
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
+        guard sessionStarted else {
+            assetWriter?.cancelWriting()
+            try? FileManager.default.removeItem(at: outputURL)
+            throw recorderError("No screen frames were received. Check Screen Recording permission and try again.")
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             videoInput?.markAsFinished()
-            assetWriter?.finishWriting { [weak self] in
-                guard let self else { return }
+            assetWriter?.finishWriting {
                 if let error = self.assetWriter?.error {
+                    try? FileManager.default.removeItem(at: self.outputURL)
                     continuation.resume(throwing: error)
                 } else {
                     continuation.resume(returning: self.outputURL)
@@ -139,23 +190,30 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, isRecording, sampleBuffer.isValid else { return }
+        let shouldAcceptFrame = stateLock.withLock { acceptsFrames }
+        guard type == .screen, shouldAcceptFrame, sampleBuffer.isValid else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         guard let writer = assetWriter, let input = videoInput, let adaptor = pixelBufferAdaptor else { return }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if !sessionStarted {
-            writer.startWriting()
+            guard writer.startWriting() else {
+                recordTerminalError(writer.error ?? recorderError("Couldn't start writing the recording."))
+                return
+            }
             writer.startSession(atSourceTime: pts)
             sessionStarted = true
         }
 
         guard input.isReadyForMoreMediaData else { return }
-        adaptor.append(
+        guard adaptor.append(
             processedBuffer(from: imageBuffer, displayTime: frameDisplayTime(sampleBuffer)),
             withPresentationTime: pts
-        )
+        ) else {
+            recordTerminalError(writer.error ?? recorderError("Couldn't append a screen frame."))
+            return
+        }
     }
 
     /// Crops a followed window and applies animated cursor-tracked zoom. Normal
@@ -246,7 +304,22 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        isRecording = false
+        stateLock.withLock {
+            _isRecording = false
+            acceptsFrames = false
+        }
+        recordTerminalError(error)
+    }
+
+    private func recordTerminalError(_ error: Error) {
+        stateLock.withLock {
+            if terminalError == nil { terminalError = error }
+        }
+    }
+
+    private func recorderError(_ message: String) -> NSError {
+        NSError(domain: "GifCapture.Recorder", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     private func matchingScreen(for display: SCDisplay) -> NSScreen? {

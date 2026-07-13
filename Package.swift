@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "GifCapture",
             path: "Sources/GifCapture"
-        )
+        ),
+        .testTarget(
+            name: "GifCaptureTests",
+            dependencies: ["GifCapture"],
+            path: "Tests/GifCaptureTests"
+        ),
     ]
 )

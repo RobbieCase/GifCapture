@@ -1,5 +1,5 @@
 import AppKit
-import Quartz
+@preconcurrency import Quartz
 import UniformTypeIdentifiers
 
 /// Finder-like browser for ~/Desktop/GifCaptures with two view modes:
@@ -44,6 +44,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
     private var previewItems: [URL] = []
     private var trimController: TrimWindowController?
     private var folderWatcher: DispatchSourceFileSystemObject?
+    private var watcherReloadWorkItem: DispatchWorkItem?
 
     private var collectionView: KeyHandlingCollectionView!
     private var gridScroll: NSScrollView!
@@ -110,14 +111,16 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - Quick Look
 
-    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+    nonisolated override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
 
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        panel.dataSource = self
-        panel.delegate = self
+    nonisolated override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        MainActor.assumeIsolated {
+            panel.dataSource = self
+            panel.delegate = self
+        }
     }
 
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
+    nonisolated override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
 
     private func currentSelection() -> [URL] {
         switch mode {
@@ -499,6 +502,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
             }
         }
 
+        var completed: [(source: URL, target: URL)] = []
         do {
             for url in candidates {
                 let target = destination.appendingPathComponent(url.lastPathComponent)
@@ -508,10 +512,22 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     try fm.copyItem(at: url, to: target)
                 }
+                completed.append((url, target))
             }
             reloadAll()
             return true
         } catch {
+            // Keep multi-item transfers all-or-nothing. Roll back anything that
+            // completed before the first failure.
+            for item in completed.reversed() {
+                if isInternal {
+                    if (try? fm.moveItem(at: item.target, to: item.source)) != nil {
+                        metadataStore.move(from: item.target, to: item.source)
+                    }
+                } else {
+                    try? fm.removeItem(at: item.target)
+                }
+            }
             showError(isInternal ? "Couldn't move item" : "Couldn't import GIF", error)
             reloadAll()
             return false
@@ -555,13 +571,21 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.write], queue: .main
         )
-        source.setEventHandler { [weak self] in self?.reloadAll() }
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.watcherReloadWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in self?.reloadAll() }
+            self.watcherReloadWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: item)
+        }
         source.setCancelHandler { Darwin.close(fd) }
         source.resume()
         folderWatcher = source
     }
 
     private func stopWatching() {
+        watcherReloadWorkItem?.cancel()
+        watcherReloadWorkItem = nil
         folderWatcher?.cancel()
         folderWatcher = nil
     }
@@ -855,12 +879,14 @@ extension LibraryWindowController: NSMenuDelegate {
 // MARK: - Quick Look data source / delegate
 
 extension LibraryWindowController: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
-        previewItems.count
+    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        MainActor.assumeIsolated { previewItems.count }
     }
 
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        previewItems.indices.contains(index) ? previewItems[index] as NSURL : nil
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        MainActor.assumeIsolated {
+            previewItems.indices.contains(index) ? previewItems[index] as NSURL : nil
+        }
     }
 }
 
@@ -1176,6 +1202,10 @@ final class LibraryCell: NSCollectionViewItem {
     private let nameLabel = NSTextField(labelWithString: "")
     private let infoLabel = NSTextField(labelWithString: "")
     private var representedURL: URL?
+    private var representedCacheKey: String?
+    private var previewOperation: Operation?
+
+    private static let previewLoader = LibraryPreviewLoader.shared
 
     override func loadView() {
         let root = NSView()
@@ -1215,26 +1245,51 @@ final class LibraryCell: NSCollectionViewItem {
     }
 
     func configure(with url: URL, isFolder: Bool, metadata: LibraryItemMetadata) {
+        previewOperation?.cancel()
+        previewOperation = nil
         representedURL = url
         nameLabel.stringValue = (metadata.favorite ? "★ " : "") + url.lastPathComponent
         infoLabel.stringValue = metadata.tags.isEmpty ? "" : metadata.tags.map { "#\($0)" }.joined(separator: " ")
         if isFolder {
+            representedCacheKey = nil
             let icon = NSWorkspace.shared.icon(for: .folder)
             icon.size = NSSize(width: 84, height: 78)
             thumbView.image = icon
         } else {
             thumbView.image = NSWorkspace.shared.icon(forFile: url.path)
-            let itemURL = url
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let image = NSImage(contentsOf: itemURL)
-                let info = LibraryMediaInfo.load(from: itemURL)
-                DispatchQueue.main.async {
-                    guard self?.representedURL == itemURL else { return }
-                    if let image { self?.thumbView.image = image }
-                    if let info { self?.infoLabel.stringValue = info.displayText }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let cacheCost = values?.fileSize ?? 0
+            let key = "\(url.standardizedFileURL.path)|\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)|\(values?.fileSize ?? 0)"
+            representedCacheKey = key
+            if let preview = Self.previewLoader.cache.object(forKey: key as NSString) {
+                apply(preview, for: key)
+                return
+            }
+            let previewLoader = Self.previewLoader
+            let operation = BlockOperation()
+            operation.addExecutionBlock { [weak self, weak operation] in
+                guard operation?.isCancelled == false else { return }
+                let preview = LibraryPreview.load(from: url)
+                guard operation?.isCancelled == false else { return }
+                previewLoader.cache.setObject(preview, forKey: key as NSString, cost: cacheCost)
+                DispatchQueue.main.async { [weak self, weak operation] in
+                    guard operation?.isCancelled == false else { return }
+                    self?.apply(preview, for: key)
                 }
             }
+            previewOperation = operation
+            previewLoader.queue.addOperation(operation)
         }
+    }
+
+    private func apply(_ preview: LibraryPreview, for key: String) {
+        guard representedCacheKey == key else { return }
+        if let image = preview.image { thumbView.image = image }
+        if let info = preview.info { infoLabel.stringValue = info.displayText }
+    }
+
+    deinit {
+        previewOperation?.cancel()
     }
 
     override var isSelected: Bool {
@@ -1243,5 +1298,20 @@ final class LibraryCell: NSCollectionViewItem {
                 ? NSColor.controlAccentColor.withAlphaComponent(0.25).cgColor
                 : NSColor.clear.cgColor
         }
+    }
+}
+
+private final class LibraryPreviewLoader: @unchecked Sendable {
+    static let shared = LibraryPreviewLoader()
+    let cache = NSCache<NSString, LibraryPreview>()
+    let queue: OperationQueue
+
+    private init() {
+        cache.countLimit = 500
+        let queue = OperationQueue()
+        queue.name = "GifCapture.LibraryPreview"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 2
+        self.queue = queue
     }
 }

@@ -108,6 +108,7 @@ private final class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
 }
 
+@MainActor
 final class SelectionOverlayController {
     private var windows: [NSWindow] = []
     private let captureMode: CaptureMode

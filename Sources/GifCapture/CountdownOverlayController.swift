@@ -2,6 +2,7 @@ import AppKit
 
 /// A short, cancellable countdown shown after region selection and before the
 /// capture stream starts. The window disappears before recording begins.
+@MainActor
 final class CountdownOverlayController {
     private var window: NSWindow?
     private weak var label: NSTextField?
@@ -72,7 +73,7 @@ final class CountdownOverlayController {
         }
 
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            self?.advance()
+            Task { @MainActor in self?.advance() }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer

@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ZIP_URL="https://github.com/RobbieCase/GifCapture/releases/latest/download/GifCapture.zip"
+CHECKSUM_URL="${ZIP_URL}.sha256"
 DEST="/Applications/GifCapture.app"
 
 TMP=$(mktemp -d)
@@ -11,6 +12,8 @@ trap 'rm -rf "${TMP}"' EXIT
 
 echo "Downloading GifCapture..."
 curl -fsSL -o "${TMP}/GifCapture.zip" "${ZIP_URL}"
+curl -fsSL -o "${TMP}/GifCapture.zip.sha256" "${CHECKSUM_URL}"
+(cd "${TMP}" && shasum -a 256 -c GifCapture.zip.sha256)
 ditto -x -k "${TMP}/GifCapture.zip" "${TMP}"
 
 echo "Installing to ${DEST}..."
