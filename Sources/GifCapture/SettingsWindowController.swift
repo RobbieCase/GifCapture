@@ -180,7 +180,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionSection.setViews([
             sectionTitle("Screen Recording access is needed"),
             permissionRow,
-            hint("Grant access, then quit and reopen GifCapture once so macOS applies the permission."),
+            hint(
+                "Grant access, then quit and reopen GifCapture once so macOS applies the permission.",
+                width: 512
+            ),
         ], in: .top)
         permissionSection.orientation = .vertical
         permissionSection.alignment = .leading
@@ -189,7 +192,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionSection.wantsLayer = true
         permissionSection.layer?.cornerRadius = 10
         permissionSection.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
-        permissionSection.widthAnchor.constraint(equalToConstant: 572).isActive = true
+        permissionSection.widthAnchor.constraint(equalToConstant: 540).isActive = true
 
         let capturePage = page([
             card(
@@ -328,7 +331,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let page = NSView()
         let stack = NSStackView(views: cards)
         stack.orientation = .vertical
-        stack.alignment = .leading
+        stack.alignment = .centerX
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         page.addSubview(stack)
@@ -343,7 +346,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func card(title: String, subtitle: String, content: NSView) -> NSView {
         let titleField = sectionTitle(title)
-        let subtitleField = hint(subtitle, width: 520)
+        let subtitleField = hint(subtitle, width: 508)
         let stack = NSStackView(views: [titleField, subtitleField, content])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -358,7 +361,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         box.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72)
         box.contentViewMargins = NSSize(width: 16, height: 14)
         box.contentView = stack
-        box.widthAnchor.constraint(equalToConstant: 572).isActive = true
+        box.widthAnchor.constraint(equalToConstant: 540).isActive = true
         // NSBox does not derive an intrinsic height from a replacement content view.
         // Give each card the height its controls need so tab pages never collapse.
         box.heightAnchor.constraint(equalToConstant: ceil(content.fittingSize.height) + 78).isActive = true

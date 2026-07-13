@@ -193,7 +193,7 @@ final class LibraryWindowController: NSWindowController, NSWindowDelegate {
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.sendsSearchStringImmediately = true
-        searchField.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        searchField.widthAnchor.constraint(equalToConstant: 200).isActive = true
 
         let revealButton = NSButton(title: "Show in Finder", target: self, action: #selector(revealCurrent))
         revealButton.bezelStyle = .texturedRounded
