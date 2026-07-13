@@ -25,7 +25,7 @@ output is a shareable GIF instead of a .mov.
   encoder (selectable in Settings) uses a Homebrew ffmpeg if present:
   `brew install ffmpeg`
 
-## Install (any Mac) — one command
+## Install or update (any Mac) — one command
 
 Paste this in Terminal:
 
@@ -33,10 +33,14 @@ Paste this in Terminal:
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/RobbieCase/GifCapture/main/install.sh)"
 ```
 
-It downloads the latest release, installs to `/Applications`, clears the
-Gatekeeper quarantine (the build is ad-hoc signed, not notarized), and launches
-the app. gifski is bundled inside the app, so there's nothing else to install —
-just grant Screen Recording permission when prompted on the first recording.
+It downloads the latest complete release, verifies its SHA-256 checksum, bundle
+identity, and code signature, installs it transactionally to `/Applications`, and
+launches the app. gifski is bundled, so there is nothing else to install. The same
+command safely updates an existing copy without resetting Screen Recording access.
+
+Public builds use the free, ad-hoc-signed distribution route rather than Apple's
+paid Developer ID/notarization route. The installer therefore removes the
+downloaded quarantine marker only after all verification succeeds.
 
 Manual alternative: grab `GifCapture.zip` from the
 [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
@@ -140,11 +144,13 @@ size. Favorites, tags, rename, and smart Recent/Large Files/Favorites collection
 are built in. Grid thumbnails show duration, pixel dimensions, and file size, and
 the Library remembers its window frame and view mode.
 
-GifCapture checks GitHub Releases for updates shortly after launch. You can also
-run a manual check from **Check for Updates…**. Because public builds are ad-hoc
-signed, the app opens the authenticated GitHub release page instead of replacing
-its own executable. Release ZIPs include a SHA-256 checksum, which the installer
-verifies before extraction.
+GifCapture checks GitHub Releases shortly after launch. You can also run a manual
+check from **Check for Updates…**. The checker uses GitHub's versioned API with a
+release-page fallback, so API rate limits do not disable update discovery. When an
+update is available, **Install Update** opens the visible checksum-verifying
+installer in Terminal; the installer quits, replaces, validates, and relaunches
+GifCapture. Every version tag is built and attached to its GitHub Release by the
+release workflow, preventing metadata-only releases from breaking installation.
 
 ## Project layout
 
@@ -160,7 +166,7 @@ Sources/GifCapture/
   RecordingOverlayController.swift  recording controls, zoom, and pen annotations
   TrimWindowController.swift    preview, range trim, and GIF save flow
   LibraryWindowController.swift grid/column Library, Quick Look, and organization
-  UpdateChecker.swift           GitHub release checking and validated self-update
+  UpdateChecker.swift           resilient GitHub checks + verified Terminal updater
 scripts/build_app.sh            compiles + assembles + ad-hoc signs the .app
 ```
 
