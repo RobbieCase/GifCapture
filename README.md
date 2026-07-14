@@ -36,11 +36,14 @@ Paste this in Terminal:
 It downloads the latest complete release, verifies its SHA-256 checksum, bundle
 identity, and code signature, installs it transactionally to `/Applications`, and
 launches the app. gifski is bundled, so there is nothing else to install. The same
-command safely updates an existing copy without resetting Screen Recording access.
+command safely updates an existing copy without forcibly resetting Screen Recording access.
 
 Public builds use the free, ad-hoc-signed distribution route rather than Apple's
 paid Developer ID/notarization route. The installer therefore removes the
-downloaded quarantine marker only after all verification succeeds.
+downloaded quarantine marker only after all verification succeeds. macOS ties an
+ad-hoc signature to one exact app version, so it may ask you to approve Screen
+Recording once after an update. GifCapture never requests that permission merely
+because the app launched; it asks only when you choose **Record New GIF…**.
 
 Manual alternative: grab `GifCapture.zip` from the
 [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),

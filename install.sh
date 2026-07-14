@@ -96,4 +96,5 @@ if [ "${GIFCAPTURE_SKIP_LAUNCH:-0}" != "1" ]; then
 fi
 VERSION="$(plutil -extract CFBundleShortVersionString raw "$PLIST")"
 echo "Done — GifCapture v${VERSION} is installed and running."
-echo "If macOS requests Screen Recording access, grant it once in Privacy & Security."
+echo "GifCapture requests Screen Recording access only when you start a recording."
+echo "Free ad-hoc-signed updates may require one new approval after the app changes."

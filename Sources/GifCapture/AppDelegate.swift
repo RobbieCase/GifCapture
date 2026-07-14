@@ -28,8 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isCapturingShortcut = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        _ = CGRequestScreenCaptureAccess()
-
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "record.circle", accessibilityDescription: "GifCapture")
@@ -114,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func startSelection() {
         guard recordingPhase == .idle,
               recorder == nil, selectionController == nil, countdownController == nil else { return }
+        guard requestScreenRecordingAccessIfNeeded() else { return }
         let captureMode = AppSettings.load().captureMode
         selectionController = SelectionOverlayController(captureMode: captureMode) { [weak self] result in
             self?.selectionController = nil
@@ -121,6 +120,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.beginRecording(result: result)
         }
         selectionController?.begin()
+    }
+
+    /// Only ask for protected access in direct response to Record. Requesting it
+    /// during every launch creates a permission nag before the user does anything.
+    private func requestScreenRecordingAccessIfNeeded() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        if CGRequestScreenCaptureAccess() { return true }
+
+        let alert = NSAlert()
+        alert.messageText = "Screen Recording access is needed"
+        alert.informativeText = "Allow GifCapture under Privacy & Security → Screen & System Audio Recording, then try recording again."
+        alert.addButton(withTitle: "Open Privacy Settings")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+        return false
     }
 
     private func beginRecording(result: SelectionResult) {
