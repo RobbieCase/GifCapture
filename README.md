@@ -45,6 +45,14 @@ ad-hoc signature to one exact app version, so it may ask you to approve Screen
 Recording once after an update. GifCapture never requests that permission merely
 because the app launched; it asks only when you choose **Record New GIF…**.
 
+v0.7.4 fixes the recording loop introduced by v0.7.3's permission preflight:
+Record now queries ScreenCaptureKit directly, so a stale Core Graphics check
+cannot block capture. Repeated clicks share one pending request, and actual
+capture failures are shown instead of silently cancelling selection. If macOS
+still denies access after you enabled it, the error offers **Restart GifCapture**
+to apply the grant. The updater also refreshes macOS app registration after
+replacing the app, without resetting Screen Recording permission.
+
 Manual alternative: grab `GifCapture.zip` from the
 [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
 unzip, move to `/Applications`, then right-click → Open on first launch.

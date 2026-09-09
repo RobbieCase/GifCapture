@@ -91,6 +91,13 @@ if ! codesign --verify --deep --strict "$DEST"; then
 fi
 run_install rm -rf "$BACKUP"
 
+# Refresh Launch Services after the bundle swap, in the logged-in user's
+# session. TCC's bundle-ID lookup can otherwise retain the replaced app.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+  "$LSREGISTER" -f "$DEST" || echo "Warning: macOS could not refresh app registration."
+fi
+
 if [ "${GIFCAPTURE_SKIP_LAUNCH:-0}" != "1" ]; then
   open "$DEST"
 fi

@@ -178,10 +178,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionRow.spacing = 14
 
         permissionSection.setViews([
-            sectionTitle("Screen Recording access is needed"),
+            sectionTitle("Screen Recording access"),
             permissionRow,
             hint(
-                "Grant access, then quit and reopen GifCapture once so macOS applies the permission.",
+                "Access is checked when you record. If macOS asks for permission, enable GifCapture, then quit and reopen it.",
                 width: 512
             ),
         ], in: .top)
@@ -191,7 +191,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         permissionSection.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
         permissionSection.wantsLayer = true
         permissionSection.layer?.cornerRadius = 10
-        permissionSection.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
+        permissionSection.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
         permissionSection.widthAnchor.constraint(equalToConstant: 540).isActive = true
 
         let capturePage = page([
@@ -459,9 +459,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updatePermissionStatus() {
-        let granted = CGPreflightScreenCaptureAccess()
-        permissionStatusLabel.stringValue = "Not Granted"
-        permissionStatusLabel.textColor = .systemRed
+        let granted = ScreenCaptureAccess.shared.hasVerifiedAccess || CGPreflightScreenCaptureAccess()
+        permissionStatusLabel.stringValue = "Checked when recording"
+        permissionStatusLabel.textColor = .secondaryLabelColor
         let shouldHide = granted
         guard permissionSection.isHidden != shouldHide else { return }
         permissionSection.isHidden = shouldHide

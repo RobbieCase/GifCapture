@@ -112,12 +112,14 @@ private final class OverlayWindow: NSWindow {
 final class SelectionOverlayController {
     private var windows: [NSWindow] = []
     private let captureMode: CaptureMode
+    private let displays: [SCDisplay]
     private let completion: (SelectionResult?) -> Void
     private var monitor: Any?
     private var finished = false
 
-    init(captureMode: CaptureMode, completion: @escaping (SelectionResult?) -> Void) {
+    init(captureMode: CaptureMode, displays: [SCDisplay], completion: @escaping (SelectionResult?) -> Void) {
         self.captureMode = captureMode
+        self.displays = displays
         self.completion = completion
     }
 
@@ -126,6 +128,8 @@ final class SelectionOverlayController {
         var restoredWindow: NSWindow?
 
         for screen in NSScreen.screens {
+            guard let displayID = WindowCaptureGeometry.displayID(of: screen),
+                  displays.contains(where: { $0.displayID == displayID }) else { continue }
             let window = OverlayWindow(
                 contentRect: screen.frame,
                 styleMask: .borderless,
@@ -160,6 +164,11 @@ final class SelectionOverlayController {
                 view.presentInitialRect(Self.defaultDragSelection(in: view.bounds))
                 restoredWindow = window
             }
+        }
+
+        guard !windows.isEmpty else {
+            cancel()
+            return
         }
 
         // A selection on one screen clears any selection shown on the others.
@@ -198,24 +207,15 @@ final class SelectionOverlayController {
             height: viewRect.height
         )
 
-        Task {
-            let display = await Self.matchDisplay(for: screen)
-            await MainActor.run {
-                guard !self.finished else { return }
-                self.finished = true
-                guard let display else {
-                    self.completion(nil)
-                    return
-                }
-                self.completion(SelectionResult(
-                    rect: rect,
-                    display: display,
-                    screen: screen,
-                    captureMode: self.captureMode,
-                    windowID: windowID
-                ))
-            }
+        guard !finished else { return }
+        finished = true
+        guard let displayID = WindowCaptureGeometry.displayID(of: screen),
+              let display = displays.first(where: { $0.displayID == displayID }) else {
+            completion(nil)
+            return
         }
+        completion(SelectionResult(rect: rect, display: display, screen: screen,
+                                   captureMode: captureMode, windowID: windowID))
     }
 
     private func cancel() {
@@ -244,9 +244,4 @@ final class SelectionOverlayController {
         )
     }
 
-    private static func matchDisplay(for screen: NSScreen) async -> SCDisplay? {
-        guard let displayID = WindowCaptureGeometry.displayID(of: screen) else { return nil }
-        guard let content = try? await SCShareableContent.current else { return nil }
-        return content.displays.first { $0.displayID == displayID }
-    }
 }

@@ -112,33 +112,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func startSelection() {
         guard recordingPhase == .idle,
               recorder == nil, selectionController == nil, countdownController == nil else { return }
-        guard requestScreenRecordingAccessIfNeeded() else { return }
-        let captureMode = AppSettings.load().captureMode
-        selectionController = SelectionOverlayController(captureMode: captureMode) { [weak self] result in
-            self?.selectionController = nil
-            guard let self, let result else { return }
-            self.beginRecording(result: result)
+        guard !ScreenCaptureAccess.shared.isChecking else { return }
+        Task { [self] in
+            guard recordingPhase == .idle, recorder == nil,
+                  selectionController == nil, countdownController == nil else { return }
+            do {
+                guard let displays = try await ScreenCaptureAccess.shared.displaysForRecording() else { return }
+                guard !displays.isEmpty else {
+                    showError("Couldn't find a display", NSError(domain: "GifCapture", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Connect or wake a display, then try recording again."]))
+                    return
+                }
+                let captureMode = AppSettings.load().captureMode
+                selectionController = SelectionOverlayController(captureMode: captureMode, displays: displays) { [weak self] result in
+                    self?.selectionController = nil
+                    guard let self, let result else { return }
+                    self.beginRecording(result: result)
+                }
+                selectionController?.begin()
+            } catch {
+                showCaptureError(error)
+            }
         }
-        selectionController?.begin()
     }
 
-    /// Only ask for protected access in direct response to Record. Requesting it
-    /// during every launch creates a permission nag before the user does anything.
-    private func requestScreenRecordingAccessIfNeeded() -> Bool {
-        if CGPreflightScreenCaptureAccess() { return true }
-        if CGRequestScreenCaptureAccess() { return true }
-
+    private func showCaptureError(_ error: Error) {
+        guard ScreenCaptureAccess.isPermissionDenied(error) else {
+            showError("Couldn't start recording", error)
+            return
+        }
         let alert = NSAlert()
-        alert.messageText = "Screen Recording access is needed"
-        alert.informativeText = "Allow GifCapture under Privacy & Security → Screen & System Audio Recording, then try recording again."
+        alert.messageText = "macOS couldn't allow screen recording"
+        alert.informativeText = "If GifCapture is already enabled in Screen & System Audio Recording, restart GifCapture to apply that permission. Otherwise, enable it in Privacy Settings, then restart GifCapture."
         alert.addButton(withTitle: "Open Privacy Settings")
+        alert.addButton(withTitle: "Restart GifCapture")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn,
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn,
            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
             NSWorkspace.shared.open(url)
+        } else if response == .alertSecondButtonReturn {
+            restartForScreenCaptureAccess()
         }
-        return false
+    }
+
+    private func restartForScreenCaptureAccess() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            Task { @MainActor in
+                if let error {
+                    self.showError("Couldn't restart GifCapture", error)
+                } else {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
     }
 
     private func beginRecording(result: SelectionResult) {
@@ -210,15 +240,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await MainActor.run {
                     guard self.recorder === recorder else { return }
                     self.stopFollowingWindow()
-                    if self.recordingPhase != .stopping {
-                        self.showError("Couldn't start recording", error)
-                    }
+                    let shouldShowError = self.recordingPhase != .stopping
                     self.recordingOverlay?.close()
                     self.recordingOverlay = nil
                     self.recorder = nil
                     self.recordingPhase = .idle
                     self.rebuildMenu()
                     self.configureGlobalShortcuts(showErrors: false)
+                    if shouldShowError { self.showCaptureError(error) }
                 }
             }
         }
