@@ -26,6 +26,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let startShortcutButton = ShortcutRecorderButton()
     private let libraryShortcutButton = ShortcutRecorderButton()
     private let stopShortcutButton = ShortcutRecorderButton()
+    private let zoomCheckbox = NSButton(checkboxWithTitle: "Zoom", target: nil, action: nil)
+    private let drawCheckbox = NSButton(checkboxWithTitle: "Draw", target: nil, action: nil)
+    private let clickCheckbox = NSButton(checkboxWithTitle: "Click", target: nil, action: nil)
     private let zoomModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let drawModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let clickIndicatorModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -93,6 +96,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             captureModePopup, followWindowCheckbox,
             countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
             zoomModifierPopup, drawModifierPopup, clickIndicatorModifierPopup,
+            zoomCheckbox, drawCheckbox, clickCheckbox,
         ]
         ordinaryControls.forEach {
             $0.target = self
@@ -146,7 +150,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
         clickIndicatorModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        clickIndicatorModifierPopup.toolTip = "Modifier used by the third activation choice"
+        clickIndicatorModifierPopup.toolTip = "Hold this key for modifier-click feedback"
+        zoomCheckbox.toolTip = "Enable zoom while holding the selected key"
+        drawCheckbox.toolTip = "Enable drawing and pen tools while recording"
+        clickCheckbox.toolTip = "Enable click indicators using the mode selected in Capture"
 
         let clickFeedbackGrid = NSGridView(views: [
             [label("Show indicator:"), clickIndicatorPopup],
@@ -162,9 +169,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let recordingShortcutGrid = NSGridView(views: [
             [label("Stop recording:"), stopShortcutButton],
-            [label("Hold to zoom:"), zoomModifierPopup],
-            [label("Hold to draw:"), drawModifierPopup],
-            [label("Click indicator:"), clickIndicatorModifierPopup],
+            [zoomCheckbox, zoomModifierPopup],
+            [drawCheckbox, drawModifierPopup],
+            [clickCheckbox, clickIndicatorModifierPopup],
         ])
         configureCardGrid(recordingShortcutGrid)
         zoomModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
@@ -228,7 +235,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ),
             card(
                 title: "While recording",
-                subtitle: "Stop is a shortcut; zoom, drawing, and click feedback activate while held.",
+                subtitle: "Enable the effects you want. Hold the selected keys for zoom and drawing.",
                 content: recordingShortcutGrid
             ),
         ])
@@ -403,7 +410,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         reloadClickIndicatorModeItems()
         clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
         clickIndicatorColorWell.color = settings.clickIndicatorColor.nsColor
-        clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
+        zoomCheckbox.state = settings.zoomEnabled ? .on : .off
+        drawCheckbox.state = settings.drawEnabled ? .on : .off
+        clickCheckbox.state = settings.clickIndicatorEnabled ? .on : .off
         startShortcutButton.shortcut = settings.startRecordingShortcut
         libraryShortcutButton.shortcut = settings.openLibraryShortcut
         stopShortcutButton.shortcut = settings.stopRecordingShortcut
@@ -412,7 +421,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         clickIndicatorModifierPopup.selectItem(
             at: RecordingModifier.allCases.firstIndex(of: settings.clickIndicatorModifier) ?? 1
         )
-        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorMode == .modifierClick
+        updateEffectControls()
     }
 
     @objc private func controlChanged(_ sender: Any?) {
@@ -439,18 +448,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.followWindow = followWindowCheckbox.state == .on
         settings.countdownEnabled = countdownCheckbox.state == .on
         settings.showCursor = cursorCheckbox.state == .on
+        settings.zoomEnabled = zoomCheckbox.state == .on
+        settings.drawEnabled = drawCheckbox.state == .on
+        settings.clickIndicatorEnabled = clickCheckbox.state == .on
         settings.clickIndicatorMode = ClickIndicatorMode.allCases[max(0, clickIndicatorPopup.indexOfSelectedItem)]
         settings.clickIndicatorColor = IndicatorColor(clickIndicatorColorWell.color)
         settings.zoomModifier = newZoom
         settings.drawModifier = newDraw
         settings.clickIndicatorModifier = newClickModifier
         qualityValueLabel.stringValue = String(settings.quality)
-        clickIndicatorColorWell.isEnabled = settings.clickIndicatorMode != .off
         followWindowCheckbox.isEnabled = settings.captureMode == .window
-        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorMode == .modifierClick
+        updateEffectControls()
         reloadClickIndicatorModeItems()
         clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
         saveAndNotify()
+    }
+
+    private func updateEffectControls() {
+        zoomModifierPopup.isEnabled = settings.zoomEnabled
+        drawModifierPopup.isEnabled = settings.drawEnabled
+        clickIndicatorPopup.isEnabled = settings.clickIndicatorEnabled
+        clickIndicatorColorWell.isEnabled = settings.clickIndicatorEnabled
+        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorEnabled
+            && settings.clickIndicatorMode == .modifierClick
     }
 
     @objc private func openScreenRecordingSettings() {

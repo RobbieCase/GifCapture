@@ -25,7 +25,15 @@ output is a shareable GIF instead of a .mov.
   encoder (selectable in Settings) uses a Homebrew ffmpeg if present:
   `brew install ffmpeg`
 
-## Install or update (any Mac) — one command
+## Install with drag and drop
+
+Download the `.dmg` from the [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
+open it, and drag GifCapture onto Applications. Quit any running copy first.
+The disk image includes first-launch and Screen Recording instructions.
+These builds are not notarized; macOS may require **Open Anyway** in
+System Settings → Privacy & Security after the first launch attempt.
+
+## Install or update with Terminal
 
 Paste this in Terminal:
 
@@ -36,7 +44,9 @@ Paste this in Terminal:
 It downloads the latest complete release, verifies its SHA-256 checksum, bundle
 identity, and code signature, installs it transactionally to `/Applications`, and
 launches the app. gifski is bundled, so there is nothing else to install. The same
-command safely updates an existing copy without forcibly resetting Screen Recording access.
+command safely updates an existing copy. Updating a pre-0.7.5 installation also
+repairs its obsolete Screen Recording permission once; approve GifCapture again
+after that migration. Later updates do not forcibly reset access.
 
 Public builds use the free, ad-hoc-signed distribution route rather than Apple's
 paid Developer ID/notarization route. The installer therefore removes the
@@ -45,19 +55,44 @@ ad-hoc signature to one exact app version, so it may ask you to approve Screen
 Recording once after an update. GifCapture never requests that permission merely
 because the app launched; it asks only when you choose **Record New GIF…**.
 
-v0.7.4 fixes the recording loop introduced by v0.7.3's permission preflight:
+v0.7.4 removes the recording gate introduced by v0.7.3's permission preflight:
 Record now queries ScreenCaptureKit directly, so a stale Core Graphics check
 cannot block capture. Repeated clicks share one pending request, and actual
 capture failures are shown instead of silently cancelling selection. If macOS
 still denies access after you enabled it, the error offers **Restart GifCapture**
 to apply the grant. The updater also refreshes macOS app registration after
-replacing the app, without resetting Screen Recording permission.
+replacing the app.
+
+v0.7.5 repairs an additional confirmed cause of the permission loop: macOS can
+retain an enabled permission whose code-signing requirement still refers to an
+old development certificate. The updater clears only GifCapture's Screen
+Recording entry when migrating from a pre-0.7.5 install. Start a recording,
+approve the current app once, and quit and reopen it when macOS asks. A
+**Repair Access…** action in the recording error also makes the same targeted
+repair available for manual installs or future stale entries.
+
+In **Settings → Shortcuts → While recording**, v0.7.5 adds independent **Zoom**,
+**Draw**, and **Click** checkboxes. Turning an effect off preserves its selected
+key and click mode for later. The click-mode dropdown contains only Every Click
+and modifier-click; existing Off preferences migrate to an unchecked Click box.
 
 Manual alternative: grab `GifCapture.zip` from the
 [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
 unzip, move to `/Applications`, then right-click → Open on first launch.
 
 ## Build
+
+To make a drag-and-drop DMG from an existing release ZIP and its checksum:
+
+```sh
+bash scripts/package_dmg.sh
+```
+
+The script verifies the release, creates an unnotarized disk image containing
+GifCapture, an Applications shortcut, and installation instructions, then mounts
+it read-only to check its contents and app signature. The version comes from the
+packaged app. The result is `.build/dist/GifCapture-<version>.dmg` and its checksum.
+It does not rebuild the app or include unpublished source changes.
 
 ```
 ./scripts/build_app.sh

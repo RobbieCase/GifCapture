@@ -22,7 +22,7 @@ jobs:
       - name: Check out tagged source
         uses: actions/checkout@v4
 
-      - name: Test capture permission recovery
+      - name: Test settings and capture permission recovery
         run: swift test
 
       - name: Build universal app
@@ -34,6 +34,9 @@ jobs:
         shell: bash
         run: ./scripts/validate_release.sh "${GITHUB_REF_NAME#v}"
 
+      - name: Package and verify drag-and-drop DMG
+        run: bash scripts/package_dmg.sh
+
       - name: Publish complete GitHub Release
         shell: bash
         run: |
@@ -41,11 +44,15 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" \
               .build/dist/GifCapture.zip \
               .build/dist/GifCapture.zip.sha256 \
+              ".build/dist/GifCapture-${GITHUB_REF_NAME#v}.dmg" \
+              ".build/dist/GifCapture-${GITHUB_REF_NAME#v}.dmg.sha256" \
               --clobber
           else
             gh release create "$GITHUB_REF_NAME" \
               .build/dist/GifCapture.zip \
               .build/dist/GifCapture.zip.sha256 \
+              ".build/dist/GifCapture-${GITHUB_REF_NAME#v}.dmg" \
+              ".build/dist/GifCapture-${GITHUB_REF_NAME#v}.dmg.sha256" \
               --title "GifCapture $GITHUB_REF_NAME" \
               --generate-notes \
               --latest

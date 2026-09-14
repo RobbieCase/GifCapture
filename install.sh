@@ -43,6 +43,7 @@ if [ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" != "$BUNDLE_ID" ]; the
   exit 1
 fi
 codesign --verify --deep --strict "$SOURCE_APP"
+VERSION="$(plutil -extract CFBundleShortVersionString raw "$PLIST")"
 
 USE_SUDO=0
 INSTALL_PARENT="$(dirname "$DEST")"
@@ -67,6 +68,10 @@ if [ "${GIFCAPTURE_SKIP_QUIT:-0}" != "1" ]; then
 fi
 
 BACKUP="${DEST}.previous"
+PREVIOUS_VERSION=""
+if [ -f "$DEST/Contents/Info.plist" ]; then
+  PREVIOUS_VERSION="$(plutil -extract CFBundleShortVersionString raw "$DEST/Contents/Info.plist" 2>/dev/null || true)"
+fi
 run_install rm -rf "$BACKUP"
 if [ -e "$DEST" ]; then
   run_install mv "$DEST" "$BACKUP"
@@ -98,10 +103,25 @@ if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$DEST" || echo "Warning: macOS could not refresh app registration."
 fi
 
+# Migrate pre-0.7.5 installs once. An enabled TCC row can still require the
+# obsolete local signing certificate; toggling it does not replace that code
+# requirement. Keep later updates and same-version reinstalls untouched.
+REPAIR_LEGACY_ACCESS=0
+case "$PREVIOUS_VERSION" in 0.[0-6].*|0.7.[0-4]) REPAIR_LEGACY_ACCESS=1 ;; esac
+# The main-branch installer can arrive before the new release finishes building.
+case "$VERSION" in 0.[0-6].*|0.7.[0-4]) REPAIR_LEGACY_ACCESS=0 ;; esac
+if [ "$REPAIR_LEGACY_ACCESS" = "1" ]; then
+    echo "Repairing GifCapture's obsolete Screen Recording permission..."
+    if /usr/bin/tccutil reset ScreenCapture "$BUNDLE_ID"; then
+      echo "Start a recording and approve GifCapture once, then quit and reopen it."
+    else
+      echo "Automatic repair was unavailable. Use Repair Access in GifCapture's recording error."
+    fi
+fi
+
 if [ "${GIFCAPTURE_SKIP_LAUNCH:-0}" != "1" ]; then
   open "$DEST"
 fi
-VERSION="$(plutil -extract CFBundleShortVersionString raw "$PLIST")"
 echo "Done — GifCapture v${VERSION} is installed and running."
 echo "GifCapture requests Screen Recording access only when you start a recording."
 echo "Free ad-hoc-signed updates may require one new approval after the app changes."

@@ -66,12 +66,14 @@ final class RecordingOverlayController: NSObject {
         let toolWidth: CGFloat = 210
         let fitsRight = localRect.maxX + 10 + toolWidth <= screen.frame.width - 4
         let fitsLeft = localRect.minX - toolWidth - 10 >= 4
-        toolPanelDocked = !(fitsRight || fitsLeft)
+        toolPanelDocked = keyBindings.drawEnabled && !(fitsRight || fitsLeft)
 
         showDimWindow(cutout: localRect)
         showDrawWindow(over: localRect)
         showControlPanel(above: localRect)
-        showToolPanel(beside: localRect, hudFrame: panel?.frame ?? .zero)
+        if keyBindings.drawEnabled {
+            showToolPanel(beside: localRect, hudFrame: panel?.frame ?? .zero)
+        }
         installClickIndicatorMonitors()
 
         startTime = Date()
@@ -143,7 +145,7 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func installClickIndicatorMonitors() {
-        guard keyBindings.clickIndicatorMode != .off else { return }
+        guard keyBindings.clickIndicatorEnabled else { return }
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             self?.showClickIndicator(for: event)
@@ -155,10 +157,7 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func showClickIndicator(for event: NSEvent) {
-        guard keyBindings.clickIndicatorMode.matches(
-            event.modifierFlags,
-            modifier: keyBindings.clickIndicatorModifier
-        ),
+        guard keyBindings.showsClickIndicator(with: event.modifierFlags),
               let drawWindow, let drawView else { return }
         let location = NSEvent.mouseLocation
         guard drawWindow.frame.contains(location),
@@ -272,7 +271,10 @@ final class RecordingOverlayController: NSObject {
         let stop = NSButton(title: "Stop", target: self, action: #selector(stopTapped))
         stop.frame = NSRect(x: width - 70, y: height / 2 - 12, width: 60, height: 24)
         stop.bezelStyle = .rounded
-        stop.toolTip = "Zoom: hold \(keyBindings.zoomModifier.shortName) · Draw: hold \(keyBindings.drawModifier.shortName)"
+        var tips: [String] = []
+        if keyBindings.zoomEnabled { tips.append("Zoom: hold \(keyBindings.zoomModifier.shortName)") }
+        if keyBindings.drawEnabled { tips.append("Draw: hold \(keyBindings.drawModifier.shortName)") }
+        stop.toolTip = tips.isEmpty ? "Stop recording" : tips.joined(separator: " · ")
         container.addSubview(stop)
 
         panel.orderFrontRegardless()
@@ -469,8 +471,8 @@ final class RecordingOverlayController: NSObject {
 
     private func pollModifiers() {
         let flags = NSEvent.modifierFlags
-        let zoom = flags.contains(keyBindings.zoomModifier.eventFlag)
-        let pen = penLock || flags.contains(keyBindings.drawModifier.eventFlag)
+        let zoom = keyBindings.zoomIsActive(with: flags)
+        let pen = keyBindings.drawIsActive(with: flags, penLocked: penLock)
 
         if zoom != lastZoom {
             lastZoom = zoom

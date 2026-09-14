@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastSelectionPointWidth = 0
     private let hotKeyManager = GlobalHotKeyManager()
     private var isCapturingShortcut = false
+    private var isRepairingScreenCaptureAccess = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -112,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func startSelection() {
         guard recordingPhase == .idle,
               recorder == nil, selectionController == nil, countdownController == nil else { return }
-        guard !ScreenCaptureAccess.shared.isChecking else { return }
+        guard !ScreenCaptureAccess.shared.isChecking, !isRepairingScreenCaptureAccess else { return }
         Task { [self] in
             guard recordingPhase == .idle, recorder == nil,
                   selectionController == nil, countdownController == nil else { return }
@@ -143,9 +144,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let alert = NSAlert()
         alert.messageText = "macOS couldn't allow screen recording"
-        alert.informativeText = "If GifCapture is already enabled in Screen & System Audio Recording, restart GifCapture to apply that permission. Otherwise, enable it in Privacy Settings, then restart GifCapture."
+        alert.informativeText = "If GifCapture is already enabled, macOS may still have permission saved for an older app signature. Repair Access removes only GifCapture's saved Screen Recording permission, then restarts the app. You will need to approve it once again. If you just enabled access, try restarting first."
         alert.addButton(withTitle: "Open Privacy Settings")
         alert.addButton(withTitle: "Restart GifCapture")
+        alert.addButton(withTitle: "Repair Access…")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -154,6 +156,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         } else if response == .alertSecondButtonReturn {
             restartForScreenCaptureAccess()
+        } else if response == .alertThirdButtonReturn {
+            repairScreenCaptureAccess()
+        }
+    }
+
+    private func repairScreenCaptureAccess() {
+        guard !isRepairingScreenCaptureAccess else { return }
+        isRepairingScreenCaptureAccess = true
+        Task {
+            defer { isRepairingScreenCaptureAccess = false }
+            do {
+                try await ScreenCapturePermissionRepair.repair(appURL: Bundle.main.bundleURL)
+                let alert = NSAlert()
+                alert.messageText = "Screen Recording permission repaired"
+                alert.informativeText = "After restarting, choose Record New GIF and allow GifCapture in System Settings. If macOS asks you to quit and reopen, do so to apply the fresh permission."
+                alert.addButton(withTitle: "Restart GifCapture")
+                alert.runModal()
+                restartForScreenCaptureAccess()
+            } catch {
+                showError("Couldn't repair Screen Recording access", error)
+            }
         }
     }
 

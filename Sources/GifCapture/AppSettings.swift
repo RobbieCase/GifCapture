@@ -46,13 +46,11 @@ enum CaptureMode: String, CaseIterable {
 }
 
 enum ClickIndicatorMode: String, CaseIterable {
-    case off
     case everyClick
     case modifierClick
 
     func displayName(modifier: RecordingModifier) -> String {
         switch self {
-        case .off: return "Off"
         case .everyClick: return "Every Click"
         case .modifierClick: return "\(modifier.shortName)-click (\(modifier.symbol))"
         }
@@ -60,7 +58,6 @@ enum ClickIndicatorMode: String, CaseIterable {
 
     func matches(_ flags: NSEvent.ModifierFlags, modifier: RecordingModifier) -> Bool {
         switch self {
-        case .off: return false
         case .everyClick: return true
         case .modifierClick: return flags.contains(modifier.eventFlag)
         }
@@ -106,6 +103,9 @@ struct AppSettings {
     var followWindow: Bool
     var countdownEnabled: Bool
     var showCursor: Bool
+    var zoomEnabled: Bool
+    var drawEnabled: Bool
+    var clickIndicatorEnabled: Bool
     var clickIndicatorMode: ClickIndicatorMode
     var clickIndicatorModifier: RecordingModifier
     var clickIndicatorColor: IndicatorColor
@@ -117,8 +117,7 @@ struct AppSettings {
 
     static let fpsChoices = [10, 12, 15, 20, 24, 30]
 
-    static func load() -> AppSettings {
-        let d = UserDefaults.standard
+    static func load(from d: UserDefaults = .standard) -> AppSettings {
         let zoomModifier = RecordingModifier(rawValue: d.string(forKey: "zoomModifier") ?? "") ?? .control
         var drawModifier = RecordingModifier(rawValue: d.string(forKey: "drawModifier") ?? "") ?? .shift
         if drawModifier == zoomModifier {
@@ -146,7 +145,7 @@ struct AppSettings {
         case "controlClick": clickMode = .modifierClick; migratedClickModifier = .control
         case "shiftClick": clickMode = .modifierClick; migratedClickModifier = .shift
         default:
-            clickMode = ClickIndicatorMode(rawValue: storedClickMode) ?? .off
+            clickMode = ClickIndicatorMode(rawValue: storedClickMode) ?? .everyClick
             migratedClickModifier = nil
         }
         var clickModifier = RecordingModifier(
@@ -171,6 +170,10 @@ struct AppSettings {
             followWindow: FeatureFlags.followWindow && d.bool(forKey: "followWindow"),
             countdownEnabled: d.bool(forKey: "countdownEnabled"),
             showCursor: d.object(forKey: "showCursor") as? Bool ?? true,
+            zoomEnabled: d.object(forKey: "zoomEnabled") as? Bool ?? true,
+            drawEnabled: d.object(forKey: "drawEnabled") as? Bool ?? true,
+            clickIndicatorEnabled: d.object(forKey: "clickIndicatorEnabled") as? Bool
+                ?? (ClickIndicatorMode(rawValue: storedClickMode) != nil || migratedClickModifier != nil),
             clickIndicatorMode: clickMode,
             clickIndicatorModifier: clickModifier,
             clickIndicatorColor: indicatorColor,
@@ -188,8 +191,7 @@ struct AppSettings {
         )
     }
 
-    func save() {
-        let d = UserDefaults.standard
+    func save(to d: UserDefaults = .standard) {
         d.set(encoder.rawValue, forKey: "encoder")
         d.set(quality, forKey: "quality")
         d.set(fps, forKey: "fps")
@@ -200,6 +202,9 @@ struct AppSettings {
         d.set(followWindow, forKey: "followWindow")
         d.set(countdownEnabled, forKey: "countdownEnabled")
         d.set(showCursor, forKey: "showCursor")
+        d.set(zoomEnabled, forKey: "zoomEnabled")
+        d.set(drawEnabled, forKey: "drawEnabled")
+        d.set(clickIndicatorEnabled, forKey: "clickIndicatorEnabled")
         d.set(clickIndicatorMode.rawValue, forKey: "clickIndicatorMode")
         d.set(clickIndicatorModifier.rawValue, forKey: "clickIndicatorModifier")
         d.set(clickIndicatorColor.red, forKey: "clickIndicatorRed")
@@ -211,5 +216,17 @@ struct AppSettings {
         stopRecordingShortcut.save(to: d, prefix: "stopRecordingShortcut")
         d.set(zoomModifier.rawValue, forKey: "zoomModifier")
         d.set(drawModifier.rawValue, forKey: "drawModifier")
+    }
+
+    func zoomIsActive(with flags: NSEvent.ModifierFlags) -> Bool {
+        zoomEnabled && flags.contains(zoomModifier.eventFlag)
+    }
+
+    func drawIsActive(with flags: NSEvent.ModifierFlags, penLocked: Bool) -> Bool {
+        drawEnabled && (penLocked || flags.contains(drawModifier.eventFlag))
+    }
+
+    func showsClickIndicator(with flags: NSEvent.ModifierFlags) -> Bool {
+        clickIndicatorEnabled && clickIndicatorMode.matches(flags, modifier: clickIndicatorModifier)
     }
 }
