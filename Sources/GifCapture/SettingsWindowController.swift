@@ -26,12 +26,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let startShortcutButton = ShortcutRecorderButton()
     private let libraryShortcutButton = ShortcutRecorderButton()
     private let stopShortcutButton = ShortcutRecorderButton()
+    private let lockedZoomCheckbox = NSButton(checkboxWithTitle: "Locked zoom", target: nil, action: nil)
+    private let lockedZoomBindingButton = RecordingBindingButton()
     private let zoomCheckbox = NSButton(checkboxWithTitle: "Zoom", target: nil, action: nil)
     private let drawCheckbox = NSButton(checkboxWithTitle: "Draw", target: nil, action: nil)
     private let clickCheckbox = NSButton(checkboxWithTitle: "Click", target: nil, action: nil)
-    private let zoomModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let drawModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let clickIndicatorModifierPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let zoomBindingButton = RecordingBindingButton()
+    private let drawBindingButton = RecordingBindingButton()
+    private let clickIndicatorBindingButton = RecordingBindingButton()
 
     private let sectionSelector = NSSegmentedControl(
         labels: ["Capture", "Output", "Shortcuts"],
@@ -95,8 +97,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             autoCopyCheckbox, exportMP4Checkbox,
             captureModePopup, followWindowCheckbox,
             countdownCheckbox, cursorCheckbox, clickIndicatorPopup, clickIndicatorColorWell,
-            zoomModifierPopup, drawModifierPopup, clickIndicatorModifierPopup,
-            zoomCheckbox, drawCheckbox, clickCheckbox,
+            zoomCheckbox, lockedZoomCheckbox, drawCheckbox, clickCheckbox,
         ]
         ordinaryControls.forEach {
             $0.target = self
@@ -104,11 +105,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
 
         configureShortcutButtons()
-
-        let modifierTitles = RecordingModifier.allCases.map(\.displayName)
-        zoomModifierPopup.addItems(withTitles: modifierTitles)
-        drawModifierPopup.addItems(withTitles: modifierTitles)
-        clickIndicatorModifierPopup.addItems(withTitles: modifierTitles)
 
         [startShortcutButton, libraryShortcutButton, stopShortcutButton].forEach {
             $0.widthAnchor.constraint(equalToConstant: 180).isActive = true
@@ -149,8 +145,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         captureModePopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         clickIndicatorPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
-        clickIndicatorModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        clickIndicatorModifierPopup.toolTip = "Hold this key for modifier-click feedback"
+        clickIndicatorBindingButton.widthAnchor.constraint(equalToConstant: 180).isActive = true
         zoomCheckbox.toolTip = "Enable zoom while holding the selected key"
         drawCheckbox.toolTip = "Enable drawing and pen tools while recording"
         clickCheckbox.toolTip = "Enable click indicators using the mode selected in Capture"
@@ -169,13 +164,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let recordingShortcutGrid = NSGridView(views: [
             [label("Stop recording:"), stopShortcutButton],
-            [zoomCheckbox, zoomModifierPopup],
-            [drawCheckbox, drawModifierPopup],
-            [clickCheckbox, clickIndicatorModifierPopup],
+            [zoomCheckbox, zoomBindingButton],
+            [lockedZoomCheckbox, lockedZoomBindingButton],
+            [drawCheckbox, drawBindingButton],
+            [clickCheckbox, clickIndicatorBindingButton],
         ])
         configureCardGrid(recordingShortcutGrid)
-        zoomModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
-        drawModifierPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        // Align the checkbox squares, regardless of their label lengths.
+        // Keep the Stop label right-aligned and every binding in one column.
+        for row in 1..<recordingShortcutGrid.numberOfRows {
+            recordingShortcutGrid.cell(atColumnIndex: 0, rowIndex: row).xPlacement = .leading
+        }
+        lockedZoomBindingButton.toolTip = "Hold to zoom at a fixed spot. Release to zoom out. Takes priority over moving zoom."
+        lockedZoomBindingButton.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        zoomBindingButton.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        drawBindingButton.widthAnchor.constraint(equalToConstant: 180).isActive = true
 
         permissionStatusLabel.font = .systemFont(ofSize: 13, weight: .medium)
         let settingsButton = NSButton(title: "Open System Settings…", target: self, action: #selector(openScreenRecordingSettings))
@@ -235,7 +238,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ),
             card(
                 title: "While recording",
-                subtitle: "Enable the effects you want. Hold the selected keys for zoom and drawing.",
+                subtitle: "Click a binding and press your keys. Hold to use an effect; release to stop.",
                 content: recordingShortcutGrid
             ),
         ])
@@ -281,22 +284,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func configureShortcutButtons() {
-        startShortcutButton.onBeginCapture = { [weak self] in
-            self?.libraryShortcutButton.cancelCapture()
-            self?.stopShortcutButton.cancelCapture()
+        for button in [startShortcutButton, libraryShortcutButton, stopShortcutButton] {
+            button.onBeginCapture = { [weak self] in self?.cancelShortcutCapture() }
         }
-        libraryShortcutButton.onBeginCapture = { [weak self] in
-            self?.startShortcutButton.cancelCapture()
-            self?.stopShortcutButton.cancelCapture()
-        }
-        stopShortcutButton.onBeginCapture = { [weak self] in
-            self?.startShortcutButton.cancelCapture()
-            self?.libraryShortcutButton.cancelCapture()
+        let bindings: [(RecordingBindingButton, WritableKeyPath<AppSettings, RecordingBinding>)] = [
+            (lockedZoomBindingButton, \.lockedZoomBinding), (zoomBindingButton, \.zoomBinding), (drawBindingButton, \.drawBinding),
+            (clickIndicatorBindingButton, \.clickIndicatorBinding)
+        ]
+        let bindingPaths = bindings.map { $0.1 }
+        for (button, path) in bindings {
+            button.onBeginCapture = { [weak self] in self?.cancelShortcutCapture() }
+            button.onChange = { [weak self, weak button] value in
+                guard let self, let button else { return }
+                let others = bindingPaths.filter { $0 != path }.map { self.settings[keyPath: $0] }
+                let globals = [settings.startRecordingShortcut, settings.openLibraryShortcut, settings.stopRecordingShortcut].map(RecordingBinding.init)
+                guard !(others + globals).contains(value) else {
+                    button.binding = settings[keyPath: path]
+                    showDuplicateShortcut()
+                    return
+                }
+                settings[keyPath: path] = value
+                reloadClickIndicatorModeItems()
+                saveAndNotify()
+            }
         }
 
         startShortcutButton.onChange = { [weak self] shortcut in
             guard let self else { return }
-            guard shortcut != settings.openLibraryShortcut, shortcut != settings.stopRecordingShortcut else {
+            guard ![settings.zoomBinding, settings.lockedZoomBinding, settings.drawBinding, settings.clickIndicatorBinding].contains(RecordingBinding(shortcut)), shortcut != settings.openLibraryShortcut, shortcut != settings.stopRecordingShortcut else {
                 showDuplicateShortcut()
                 startShortcutButton.shortcut = settings.startRecordingShortcut
                 return
@@ -306,7 +321,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         libraryShortcutButton.onChange = { [weak self] shortcut in
             guard let self else { return }
-            guard shortcut != settings.startRecordingShortcut, shortcut != settings.stopRecordingShortcut else {
+            guard ![settings.zoomBinding, settings.lockedZoomBinding, settings.drawBinding, settings.clickIndicatorBinding].contains(RecordingBinding(shortcut)), shortcut != settings.startRecordingShortcut, shortcut != settings.stopRecordingShortcut else {
                 showDuplicateShortcut()
                 libraryShortcutButton.shortcut = settings.openLibraryShortcut
                 return
@@ -316,7 +331,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
         stopShortcutButton.onChange = { [weak self] shortcut in
             guard let self else { return }
-            guard shortcut != settings.startRecordingShortcut, shortcut != settings.openLibraryShortcut else {
+            guard ![settings.zoomBinding, settings.lockedZoomBinding, settings.drawBinding, settings.clickIndicatorBinding].contains(RecordingBinding(shortcut)), shortcut != settings.startRecordingShortcut, shortcut != settings.openLibraryShortcut else {
                 showDuplicateShortcut()
                 stopShortcutButton.shortcut = settings.stopRecordingShortcut
                 return
@@ -410,34 +425,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         reloadClickIndicatorModeItems()
         clickIndicatorPopup.selectItem(at: ClickIndicatorMode.allCases.firstIndex(of: settings.clickIndicatorMode) ?? 0)
         clickIndicatorColorWell.color = settings.clickIndicatorColor.nsColor
+        lockedZoomCheckbox.state = settings.lockedZoomEnabled ? .on : .off
+        lockedZoomBindingButton.binding = settings.lockedZoomBinding
         zoomCheckbox.state = settings.zoomEnabled ? .on : .off
         drawCheckbox.state = settings.drawEnabled ? .on : .off
         clickCheckbox.state = settings.clickIndicatorEnabled ? .on : .off
         startShortcutButton.shortcut = settings.startRecordingShortcut
         libraryShortcutButton.shortcut = settings.openLibraryShortcut
         stopShortcutButton.shortcut = settings.stopRecordingShortcut
-        zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
-        drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
-        clickIndicatorModifierPopup.selectItem(
-            at: RecordingModifier.allCases.firstIndex(of: settings.clickIndicatorModifier) ?? 1
-        )
+        zoomBindingButton.binding = settings.zoomBinding
+        drawBindingButton.binding = settings.drawBinding
+        clickIndicatorBindingButton.binding = settings.clickIndicatorBinding
         updateEffectControls()
     }
 
     @objc private func controlChanged(_ sender: Any?) {
-        let newZoom = RecordingModifier.allCases[max(0, zoomModifierPopup.indexOfSelectedItem)]
-        let newDraw = RecordingModifier.allCases[max(0, drawModifierPopup.indexOfSelectedItem)]
-        let newClickModifier = RecordingModifier.allCases[max(0, clickIndicatorModifierPopup.indexOfSelectedItem)]
-        if Set([newZoom, newDraw, newClickModifier]).count != 3 {
-            NSSound.beep()
-            zoomModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.zoomModifier) ?? 0)
-            drawModifierPopup.selectItem(at: RecordingModifier.allCases.firstIndex(of: settings.drawModifier) ?? 2)
-            clickIndicatorModifierPopup.selectItem(
-                at: RecordingModifier.allCases.firstIndex(of: settings.clickIndicatorModifier) ?? 1
-            )
-            return
-        }
-
         settings.encoder = GifEncoder.allCases[max(0, encoderPopup.indexOfSelectedItem)]
         settings.quality = qualitySlider.integerValue
         settings.fps = AppSettings.fpsChoices[max(0, fpsPopup.indexOfSelectedItem)]
@@ -448,14 +450,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settings.followWindow = followWindowCheckbox.state == .on
         settings.countdownEnabled = countdownCheckbox.state == .on
         settings.showCursor = cursorCheckbox.state == .on
+        settings.lockedZoomEnabled = lockedZoomCheckbox.state == .on
         settings.zoomEnabled = zoomCheckbox.state == .on
         settings.drawEnabled = drawCheckbox.state == .on
         settings.clickIndicatorEnabled = clickCheckbox.state == .on
         settings.clickIndicatorMode = ClickIndicatorMode.allCases[max(0, clickIndicatorPopup.indexOfSelectedItem)]
         settings.clickIndicatorColor = IndicatorColor(clickIndicatorColorWell.color)
-        settings.zoomModifier = newZoom
-        settings.drawModifier = newDraw
-        settings.clickIndicatorModifier = newClickModifier
         qualityValueLabel.stringValue = String(settings.quality)
         followWindowCheckbox.isEnabled = settings.captureMode == .window
         updateEffectControls()
@@ -465,11 +465,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateEffectControls() {
-        zoomModifierPopup.isEnabled = settings.zoomEnabled
-        drawModifierPopup.isEnabled = settings.drawEnabled
+        lockedZoomBindingButton.isEnabled = settings.lockedZoomEnabled
+        zoomBindingButton.isEnabled = settings.zoomEnabled
+        drawBindingButton.isEnabled = settings.drawEnabled
         clickIndicatorPopup.isEnabled = settings.clickIndicatorEnabled
         clickIndicatorColorWell.isEnabled = settings.clickIndicatorEnabled
-        clickIndicatorModifierPopup.isEnabled = settings.clickIndicatorEnabled
+        clickIndicatorBindingButton.isEnabled = settings.clickIndicatorEnabled
             && settings.clickIndicatorMode == .modifierClick
     }
 
@@ -495,14 +496,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let selected = clickIndicatorPopup.indexOfSelectedItem
         clickIndicatorPopup.removeAllItems()
         clickIndicatorPopup.addItems(withTitles: ClickIndicatorMode.allCases.map {
-            $0.displayName(modifier: settings.clickIndicatorModifier)
+            $0 == .everyClick ? "Every Click" : "Hold \(settings.clickIndicatorBinding.displayName) + click"
         })
         if selected >= 0, selected < clickIndicatorPopup.numberOfItems {
             clickIndicatorPopup.selectItem(at: selected)
         }
     }
 
+    func windowDidResignKey(_ notification: Notification) { cancelShortcutCapture() }
+
     private func cancelShortcutCapture() {
+        lockedZoomBindingButton.cancelCapture()
+        zoomBindingButton.cancelCapture()
+        drawBindingButton.cancelCapture()
+        clickIndicatorBindingButton.cancelCapture()
         startShortcutButton.cancelCapture()
         libraryShortcutButton.cancelCapture()
         stopShortcutButton.cancelCapture()
@@ -517,7 +524,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         NSSound.beep()
         let alert = NSAlert()
         alert.messageText = "Shortcut already in use"
-        alert.informativeText = "Choose a different shortcut for Start Recording, Open Library, and Stop Recording."
+        alert.informativeText = "Each action needs a different key binding."
         alert.alertStyle = .warning
         alert.runModal()
     }

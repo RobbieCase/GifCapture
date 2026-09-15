@@ -103,6 +103,8 @@ struct AppSettings {
     var followWindow: Bool
     var countdownEnabled: Bool
     var showCursor: Bool
+    var lockedZoomEnabled: Bool
+    var lockedZoomBinding: RecordingBinding
     var zoomEnabled: Bool
     var drawEnabled: Bool
     var clickIndicatorEnabled: Bool
@@ -114,6 +116,10 @@ struct AppSettings {
     var stopRecordingShortcut: KeyboardShortcut
     var zoomModifier: RecordingModifier
     var drawModifier: RecordingModifier
+
+    var zoomBinding: RecordingBinding
+    var drawBinding: RecordingBinding
+    var clickIndicatorBinding: RecordingBinding
 
     static let fpsChoices = [10, 12, 15, 20, 24, 30]
 
@@ -170,6 +176,8 @@ struct AppSettings {
             followWindow: FeatureFlags.followWindow && d.bool(forKey: "followWindow"),
             countdownEnabled: d.bool(forKey: "countdownEnabled"),
             showCursor: d.object(forKey: "showCursor") as? Bool ?? true,
+            lockedZoomEnabled: d.bool(forKey: "lockedZoomEnabled"),
+            lockedZoomBinding: .load(from: d, key: "lockedZoomBinding", fallback: RecordingBinding(modifiers: [.command, .shift])),
             zoomEnabled: d.object(forKey: "zoomEnabled") as? Bool ?? true,
             drawEnabled: d.object(forKey: "drawEnabled") as? Bool ?? true,
             clickIndicatorEnabled: d.object(forKey: "clickIndicatorEnabled") as? Bool
@@ -187,11 +195,19 @@ struct AppSettings {
                 from: d, prefix: "stopRecordingShortcut", fallback: .defaultStopRecording
             ),
             zoomModifier: zoomModifier,
-            drawModifier: drawModifier
+            drawModifier: drawModifier,
+            zoomBinding: .load(from: d, key: "zoomBinding", fallback: RecordingBinding(zoomModifier)),
+            drawBinding: .load(from: d, key: "drawBinding", fallback: RecordingBinding(drawModifier)),
+            clickIndicatorBinding: .load(from: d, key: "clickIndicatorBinding", fallback: RecordingBinding(clickModifier))
         )
     }
 
     func save(to d: UserDefaults = .standard) {
+        d.set(lockedZoomEnabled, forKey: "lockedZoomEnabled")
+        lockedZoomBinding.save(to: d, key: "lockedZoomBinding")
+        zoomBinding.save(to: d, key: "zoomBinding")
+        drawBinding.save(to: d, key: "drawBinding")
+        clickIndicatorBinding.save(to: d, key: "clickIndicatorBinding")
         d.set(encoder.rawValue, forKey: "encoder")
         d.set(quality, forKey: "quality")
         d.set(fps, forKey: "fps")
@@ -218,15 +234,15 @@ struct AppSettings {
         d.set(drawModifier.rawValue, forKey: "drawModifier")
     }
 
-    func zoomIsActive(with flags: NSEvent.ModifierFlags) -> Bool {
-        zoomEnabled && flags.contains(zoomModifier.eventFlag)
+    func zoomIsActive(with flags: NSEvent.ModifierFlags, keyHeld: Bool = false) -> Bool {
+        zoomEnabled && zoomBinding.matches(flags: flags, keyHeld: keyHeld)
     }
 
-    func drawIsActive(with flags: NSEvent.ModifierFlags, penLocked: Bool) -> Bool {
-        drawEnabled && (penLocked || flags.contains(drawModifier.eventFlag))
+    func drawIsActive(with flags: NSEvent.ModifierFlags, penLocked: Bool, keyHeld: Bool = false) -> Bool {
+        drawEnabled && (penLocked || drawBinding.matches(flags: flags, keyHeld: keyHeld))
     }
 
-    func showsClickIndicator(with flags: NSEvent.ModifierFlags) -> Bool {
-        clickIndicatorEnabled && clickIndicatorMode.matches(flags, modifier: clickIndicatorModifier)
+    func showsClickIndicator(with flags: NSEvent.ModifierFlags, keyHeld: Bool = false) -> Bool {
+        clickIndicatorEnabled && (clickIndicatorMode == .everyClick || clickIndicatorBinding.matches(flags: flags, keyHeld: keyHeld))
     }
 }

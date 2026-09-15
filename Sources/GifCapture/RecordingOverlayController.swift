@@ -24,6 +24,8 @@ final class RecordingOverlayController: NSObject {
     private var startTime = Date()
     private weak var timeLabel: NSTextField?
     private var swatchButtons: [NSButton] = []
+    private let bindingMonitor = RecordingBindingMonitor()
+    private var bindingCaptureActive = false
     private let keyBindings = AppSettings.load()
 
     private let screen: NSScreen
@@ -31,10 +33,10 @@ final class RecordingOverlayController: NSObject {
     private let onStop: () -> Void
 
     /// Fires when the effective zoom state (button or configured hold key) changes.
-    var onZoomChange: ((Bool) -> Void)?
+    var onZoomChange: ((RecordingZoomState) -> Void)?
 
     private var penLock = false
-    private var lastZoom = false
+    private var zoomState = RecordingZoomState()
     private var lastPen = false
     private var indicatorZoom: CGFloat = 1.0
     private var toolPanelDocked = false
@@ -75,6 +77,10 @@ final class RecordingOverlayController: NSObject {
             showToolPanel(beside: localRect, hudFrame: panel?.frame ?? .zero)
         }
         installClickIndicatorMonitors()
+        bindingMonitor.onChange = { [weak self] in self?.pollModifiers() }
+        NotificationCenter.default.addObserver(self, selector: #selector(suspendBindings), name: .shortcutCaptureBegan, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(resumeBindings), name: .shortcutCaptureEnded, object: nil)
+        resumeBindings()
 
         startTime = Date()
         timer = scheduled(1) { [weak self] in self?.tick() }
@@ -157,7 +163,7 @@ final class RecordingOverlayController: NSObject {
     }
 
     private func showClickIndicator(for event: NSEvent) {
-        guard keyBindings.showsClickIndicator(with: event.modifierFlags),
+        guard keyBindings.showsClickIndicator(with: event.modifierFlags, keyHeld: bindingMonitor.isActive(keyBindings.clickIndicatorBinding, flags: event.modifierFlags)) && !bindingCaptureActive,
               let drawWindow, let drawView else { return }
         let location = NSEvent.mouseLocation
         guard drawWindow.frame.contains(location),
@@ -272,8 +278,9 @@ final class RecordingOverlayController: NSObject {
         stop.frame = NSRect(x: width - 70, y: height / 2 - 12, width: 60, height: 24)
         stop.bezelStyle = .rounded
         var tips: [String] = []
-        if keyBindings.zoomEnabled { tips.append("Zoom: hold \(keyBindings.zoomModifier.shortName)") }
-        if keyBindings.drawEnabled { tips.append("Draw: hold \(keyBindings.drawModifier.shortName)") }
+        if keyBindings.lockedZoomEnabled { tips.append("Locked zoom: hold \(keyBindings.lockedZoomBinding.displayName)") }
+        if keyBindings.zoomEnabled { tips.append("Zoom: hold \(keyBindings.zoomBinding.displayName)") }
+        if keyBindings.drawEnabled { tips.append("Draw: hold \(keyBindings.drawBinding.displayName)") }
         stop.toolTip = tips.isEmpty ? "Stop recording" : tips.joined(separator: " · ")
         container.addSubview(stop)
 
@@ -414,7 +421,7 @@ final class RecordingOverlayController: NSObject {
         )
         lock.frame = NSRect(x: 10, y: 8, width: width - 20, height: 18)
         lock.font = .systemFont(ofSize: 11)
-        lock.toolTip = "Draw without holding \(keyBindings.drawModifier.shortName)"
+        lock.toolTip = "Draw without holding \(keyBindings.drawBinding.displayName)"
         container.addSubview(lock)
 
         if toolPanelDocked {
@@ -469,15 +476,47 @@ final class RecordingOverlayController: NSObject {
 
     // MARK: - State
 
+    @objc private func suspendBindings() {
+        bindingCaptureActive = true
+        bindingMonitor.stop()
+        pollModifiers()
+    }
+
+    @objc private func resumeBindings() {
+        bindingCaptureActive = false
+        var bindings: [RecordingBinding] = []
+        if keyBindings.lockedZoomEnabled { bindings.append(keyBindings.lockedZoomBinding) }
+        if keyBindings.zoomEnabled { bindings.append(keyBindings.zoomBinding) }
+        if keyBindings.drawEnabled { bindings.append(keyBindings.drawBinding) }
+        if keyBindings.clickIndicatorEnabled && keyBindings.clickIndicatorMode == .modifierClick {
+            bindings.append(keyBindings.clickIndicatorBinding)
+        }
+        let unavailable = bindingMonitor.start(bindings)
+        if !unavailable.isEmpty, let panel {
+            let alert = NSAlert()
+            alert.messageText = "Key binding unavailable"
+            alert.informativeText = "These keys are already in use: " + unavailable.map(\.displayName).joined(separator: ", ") + ". Choose different bindings in Settings."
+            alert.beginSheetModal(for: panel)
+        }
+        pollModifiers()
+    }
+
     private func pollModifiers() {
         let flags = NSEvent.modifierFlags
-        let zoom = keyBindings.zoomIsActive(with: flags)
-        let pen = keyBindings.drawIsActive(with: flags, penLocked: penLock)
+        let zoom = !bindingCaptureActive && keyBindings.zoomIsActive(with: flags, keyHeld: bindingMonitor.isActive(keyBindings.zoomBinding, flags: flags))
+        let pen = !bindingCaptureActive && keyBindings.drawIsActive(with: flags, penLocked: penLock, keyHeld: bindingMonitor.isActive(keyBindings.drawBinding, flags: flags))
 
-        if zoom != lastZoom {
-            lastZoom = zoom
-            onZoomChange?(zoom)
-        }
+        let lockedZoom = !bindingCaptureActive && keyBindings.lockedZoomEnabled
+            && bindingMonitor.isActive(keyBindings.lockedZoomBinding, flags: flags)
+        let previous = zoomState
+        let mouse = NSEvent.mouseLocation
+        let cutout = dimView?.cutout ?? .zero
+        let cursor = CGPoint(
+            x: (mouse.x - screen.frame.minX - cutout.minX) / max(1, cutout.width),
+            y: 1 - (mouse.y - screen.frame.minY - cutout.minY) / max(1, cutout.height)
+        )
+        zoomState.update(following: zoom, locking: lockedZoom, cursor: cursor)
+        if zoomState != previous { onZoomChange?(zoomState) }
         if pen != lastPen {
             lastPen = pen
             drawWindow?.ignoresMouseEvents = !pen
@@ -488,7 +527,7 @@ final class RecordingOverlayController: NSObject {
     /// Mirrors the recorder's animated zoom so the on-screen viewport indicator
     /// matches what's being written to the video.
     private func updateZoomIndicator() {
-        let target: CGFloat = lastZoom ? 2.0 : 1.0
+        let target: CGFloat = zoomState.active ? 2.0 : 1.0
         if abs(indicatorZoom - target) > 0.004 {
             indicatorZoom += (target - indicatorZoom) * 0.16
         } else {
@@ -501,8 +540,10 @@ final class RecordingOverlayController: NSObject {
         }
         let cutout = dimView.cutout
         let mouse = NSEvent.mouseLocation
-        let localX = mouse.x - screen.frame.origin.x
-        let localY = mouse.y - screen.frame.origin.y
+        let localX = zoomState.anchor.map { cutout.minX + $0.x * cutout.width }
+            ?? (mouse.x - screen.frame.origin.x)
+        let localY = zoomState.anchor.map { cutout.minY + (1 - $0.y) * cutout.height }
+            ?? (mouse.y - screen.frame.origin.y)
         let w = cutout.width / indicatorZoom
         let h = cutout.height / indicatorZoom
         let x = min(max(localX - w / 2, cutout.minX), cutout.maxX - w)
@@ -565,6 +606,7 @@ final class RecordingOverlayController: NSObject {
     }
 
     func close() {
+        bindingMonitor.stop()
         NotificationCenter.default.removeObserver(self)
         [timer, modifierTimer, indicatorTimer].forEach { $0?.invalidate() }
         timer = nil

@@ -226,8 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlay = RecordingOverlayController(screen: result.screen, topLeftRect: result.rect) { [weak self] in
             self?.stopRecording()
         }
-        overlay.onZoomChange = { [weak recorder] active in
-            recorder?.zoomActive = active
+        overlay.onZoomChange = { [weak recorder] state in
+            recorder?.zoomState = state
         }
         overlay.show()
         recordingOverlay = overlay

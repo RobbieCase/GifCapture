@@ -9,14 +9,14 @@ struct KeyboardShortcut: Equatable {
     init(keyCode: UInt32, modifiers: NSEvent.ModifierFlags, keyName: String) {
         self.keyCode = keyCode
         self.modifierRawValue = modifiers
-            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .control, .option, .shift])
             .rawValue
         self.keyName = keyName
     }
 
     var modifiers: NSEvent.ModifierFlags {
         NSEvent.ModifierFlags(rawValue: modifierRawValue)
-            .intersection(.deviceIndependentFlagsMask)
+            .intersection([.command, .control, .option, .shift])
     }
 
     var displayName: String {
@@ -112,12 +112,14 @@ final class GlobalHotKeyManager {
     private var eventHandler: EventHandlerRef?
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var actions: [UInt32: () -> Void] = [:]
+    private var releaseActions: [UInt32: () -> Void] = [:]
+    private var generation = 0
 
     init() {
-        var eventType = EventTypeSpec(
+        var eventTypes = [EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
-        )
+        ), EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         InstallEventHandler(
             GetApplicationEventTarget(),
             { _, event, userData in
@@ -136,20 +138,27 @@ final class GlobalHotKeyManager {
                 let manager = Unmanaged<GlobalHotKeyManager>
                     .fromOpaque(userData)
                     .takeUnretainedValue()
+                guard hotKeyID.signature == GlobalHotKeyManager.signature, manager.actions[hotKeyID.id] != nil else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+                let generation = manager.generation
                 DispatchQueue.main.async {
-                    manager.actions[hotKeyID.id]?()
+                    guard manager.generation == generation else { return }
+                    if released { manager.releaseActions[hotKeyID.id]?() }
+                    else { manager.actions[hotKeyID.id]?() }
                 }
                 return noErr
             },
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             Unmanaged.passUnretained(self).toOpaque(),
             &eventHandler
         )
     }
 
     @discardableResult
-    func register(id: UInt32, shortcut: KeyboardShortcut, action: @escaping () -> Void) -> Bool {
+    func register(id: UInt32, shortcut: KeyboardShortcut, action: @escaping () -> Void, onRelease: (() -> Void)? = nil) -> Bool {
         var hotKeyRef: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
         let status = RegisterEventHotKey(
@@ -162,14 +171,17 @@ final class GlobalHotKeyManager {
         )
         guard status == noErr, let hotKeyRef else { return false }
         actions[id] = action
+        releaseActions[id] = onRelease
         hotKeyRefs.append(hotKeyRef)
         return true
     }
 
     func clear() {
+        generation += 1
         hotKeyRefs.forEach { UnregisterEventHotKey($0) }
         hotKeyRefs.removeAll()
         actions.removeAll()
+        releaseActions.removeAll()
     }
 
     deinit {
@@ -217,7 +229,7 @@ final class ShortcutRecorderButton: NSButton {
                 return nil
             }
 
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
             guard !modifiers.intersection([.command, .control, .option, .shift]).isEmpty,
                   let keyName = Self.keyName(for: event) else {
                 NSSound.beep()
@@ -252,7 +264,7 @@ final class ShortcutRecorderButton: NSButton {
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
 
-    private static func keyName(for event: NSEvent) -> String? {
+    static func keyName(for event: NSEvent) -> String? {
         switch Int(event.keyCode) {
         case kVK_Return: return "↩"
         case kVK_Tab: return "⇥"
@@ -263,6 +275,31 @@ final class ShortcutRecorderButton: NSButton {
         case kVK_RightArrow: return "→"
         case kVK_UpArrow: return "↑"
         case kVK_DownArrow: return "↓"
+        case kVK_Escape: return "Esc"
+        case kVK_Home: return "Home"
+        case kVK_End: return "End"
+        case kVK_PageUp: return "Page Up"
+        case kVK_PageDown: return "Page Down"
+        case kVK_F1: return "F1"
+        case kVK_F2: return "F2"
+        case kVK_F3: return "F3"
+        case kVK_F4: return "F4"
+        case kVK_F5: return "F5"
+        case kVK_F6: return "F6"
+        case kVK_F7: return "F7"
+        case kVK_F8: return "F8"
+        case kVK_F9: return "F9"
+        case kVK_F10: return "F10"
+        case kVK_F11: return "F11"
+        case kVK_F12: return "F12"
+        case kVK_F13: return "F13"
+        case kVK_F14: return "F14"
+        case kVK_F15: return "F15"
+        case kVK_F16: return "F16"
+        case kVK_F17: return "F17"
+        case kVK_F18: return "F18"
+        case kVK_F19: return "F19"
+        case kVK_F20: return "F20"
         default:
             guard let characters = event.charactersIgnoringModifiers?.uppercased(),
                   !characters.isEmpty else { return nil }

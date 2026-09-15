@@ -7,16 +7,16 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private let stateLock = NSLock()
     private var _isRecording = false
     private var acceptsFrames = false
-    private var _zoomActive = false
+    private var _zoomState = RecordingZoomState()
     private var terminalError: Error?
     private let outputQueue = DispatchQueue(label: "gifcapture.stream.output")
 
     var isRecording: Bool { stateLock.withLock { _isRecording } }
 
     /// Toggled from the main thread while recording; read per-frame on the capture queue.
-    var zoomActive: Bool {
-        get { stateLock.withLock { _zoomActive } }
-        set { stateLock.withLock { _zoomActive = newValue } }
+    var zoomState: RecordingZoomState {
+        get { stateLock.withLock { _zoomState } }
+        set { stateLock.withLock { _zoomState = newValue } }
     }
     private var currentZoom: CGFloat = 1.0
     private var captureRect: CGRect = .zero      // top-left origin, points, display-relative
@@ -59,7 +59,7 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
             followedCaptureRects = [TimedCaptureRect(hostTime: mach_absolute_time(), rect: rect)]
         }
         currentZoom = 1.0
-        zoomActive = false
+        zoomState = RecordingZoomState()
         stateLock.withLock {
             terminalError = nil
             _isRecording = false
@@ -219,7 +219,8 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     /// Crops a followed window and applies animated cursor-tracked zoom. Normal
     /// fixed captures still return the source buffer untouched at 1x.
     private func processedBuffer(from source: CVImageBuffer, displayTime: UInt64?) -> CVImageBuffer {
-        let target: CGFloat = zoomActive ? 2.0 : 1.0
+        let zoom = zoomState
+        let target: CGFloat = zoom.active ? 2.0 : 1.0
         if abs(currentZoom - target) > 0.004 {
             currentZoom += (target - currentZoom) * 0.16
         } else {
@@ -247,7 +248,10 @@ final class ScreenRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         let cursor = CGEvent(source: nil)?.location ?? .zero
         let cx: CGFloat
         let cyTop: CGFloat
-        if followsWindow {
+        if let anchor = zoom.anchor {
+            cx = baseRect.minX + anchor.x * baseRect.width
+            cyTop = baseRect.minY + anchor.y * baseRect.height
+        } else if followsWindow {
             cx = (cursor.x - displayBounds.minX) * scaleFactor
             cyTop = (cursor.y - displayBounds.minY) * scaleFactor
         } else {

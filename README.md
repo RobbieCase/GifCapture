@@ -76,6 +76,17 @@ In **Settings → Shortcuts → While recording**, v0.7.5 adds independent **Zoo
 key and click mode for later. The click-mode dropdown contains only Every Click
 and modifier-click; existing Off preferences migrate to an unchecked Click box.
 
+In v0.7.6, click the binding beside Zoom, Draw, or Click and press a keyboard
+key or combination (for example Z, Shift+D, or F6). For modifier-only bindings,
+press and release the modifiers together. Escape cancels. Hold the binding to
+use the effect and release it to stop. Existing bindings are preserved.
+Enable **Locked zoom** and choose its own binding to keep the zoom centered
+where your cursor was when you pressed it. Hold to stay zoomed; release to zoom
+out. Locked zoom takes priority if both zoom bindings are held; releasing it
+returns to cursor-following zoom if that binding is still held.
+These keys are reserved for GifCapture while recording; macOS-reserved shortcuts
+may be unavailable. Click bindings apply when the click mode is “Hold … + click”.
+
 Manual alternative: grab `GifCapture.zip` from the
 [latest release](https://github.com/RobbieCase/GifCapture/releases/latest),
 unzip, move to `/Applications`, then right-click → Open on first launch.
